@@ -7,7 +7,9 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.ai.ApiProviderType
 import com.example.data.ai.OkxGeminiAiService
+import com.example.data.local.ApiKeyEntity
 import com.example.data.local.AppDatabase
 import com.example.data.local.PriceAlertEntity
 import com.example.data.local.SavedAiSignalEntity
@@ -97,15 +99,27 @@ data class AdvisorChatMessage(
 class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = AppDatabase.getInstance(application)
+    private val dao = database.okxTradingDao()
     private val repository = OkxRepository(
         apiService = OkxApiService.create(),
-        dao = database.okxTradingDao()
+        dao = dao
     )
-    private val aiService = OkxGeminiAiService()
+    private val aiService = OkxGeminiAiService(dao = dao)
 
-    // Navigation Tab: 0 = Market Matrix, 1 = AI Deep Intelligence & Data, 2 = AI Screenshot & Advisor, 3 = Signals & Risk Calc
+    // Navigation Tab: 0 = Market Matrix, 1 = AI Deep Intelligence & Data, 2 = AI Screenshot & Advisor, 3 = Signals, Calc & API Keys
     private val _selectedTab = MutableStateFlow(0)
     val selectedTab: StateFlow<Int> = _selectedTab.asStateFlow()
+
+    // Quick API Key Manager Modal toggle (accessible from top bar on any screen)
+    private val _isApiKeyModalOpen = MutableStateFlow(false)
+    val isApiKeyModalOpen: StateFlow<Boolean> = _isApiKeyModalOpen.asStateFlow()
+
+    // Active AI Engine / Rotated Key Badge
+    private val _activeAiEngineBadge = MutableStateFlow("سیستەمی ئۆتۆماتیکی AI + کلیلەکان")
+    val activeAiEngineBadge: StateFlow<String> = _activeAiEngineBadge.asStateFlow()
+
+    private val _testingKeyId = MutableStateFlow<Int?>(null)
+    val testingKeyId: StateFlow<Int?> = _testingKeyId.asStateFlow()
 
     // Market Instrument Type: "SPOT" or "SWAP"
     private val _selectedInstType = MutableStateFlow("SPOT")
@@ -190,6 +204,12 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
         initialValue = emptyList()
     )
 
+    val apiKeys: StateFlow<List<ApiKeyEntity>> = dao.observeApiKeys().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
     private var tickerLoopJob: Job? = null
     private var deepInspectJob: Job? = null
 
@@ -204,6 +224,98 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTab(tabIndex: Int) {
         _selectedTab.value = tabIndex
+    }
+
+    fun setApiKeyModalOpen(open: Boolean) {
+        _isApiKeyModalOpen.value = open
+    }
+
+    fun addApiKeys(
+        labelPrefixKu: String,
+        providerTypeCode: String,
+        rawKeysInput: String,
+        customModel: String
+    ) {
+        val rawLines = rawKeysInput
+            .split("\n", ",", ";")
+            .map { it.trim() }
+            .filter { it.length >= 10 }
+
+        if (rawLines.isEmpty()) {
+            _statusBannerKu.value = "تکایە لانیکەم یەک کلیلی API ی دروست بنووسە."
+            return
+        }
+
+        viewModelScope.launch {
+            var addedCount = 0
+            rawLines.forEachIndexed { index, singleKey ->
+                val resolvedProvider = if (providerTypeCode == "AUTO") {
+                    ApiProviderType.autoDetectProvider(singleKey)
+                } else {
+                    ApiProviderType.fromId(providerTypeCode)
+                }
+                val finalModel = customModel.trim().ifBlank { resolvedProvider.defaultModel }
+                val baseLabel = labelPrefixKu.trim().ifBlank { resolvedProvider.titleKu }
+                val finalLabel = if (rawLines.size > 1) "$baseLabel #${index + 1}" else baseLabel
+
+                dao.insertApiKey(
+                    ApiKeyEntity(
+                        labelKu = finalLabel,
+                        providerType = resolvedProvider.id,
+                        apiKey = singleKey,
+                        modelName = finalModel,
+                        isEnabled = true,
+                        lastStatusKu = "ئامادەیە بۆ سووڕانەوەی ئۆتۆماتیکی (Ready)"
+                    )
+                )
+                addedCount++
+            }
+            _statusBannerKu.value = if (addedCount == 1) {
+                "١ کلیلی نوێی API زیادکرا و چالاککرا بۆ گۆڕینی ئۆتۆماتیکی"
+            } else {
+                "$addedCount کلیلی جیاوازی API بەیەکەوە زیادکران بۆ سیستەمی سووڕانەوەی ئۆتۆماتیکی"
+            }
+            // Re-run AI prediction immediately with the newly added key(s)
+            aiPredictionCache.clear()
+            triggerGeminiAiPrediction()
+        }
+    }
+
+    fun toggleApiKeyEnabled(entity: ApiKeyEntity) {
+        viewModelScope.launch {
+            val updated = entity.copy(
+                isEnabled = !entity.isEnabled,
+                cooldownUntilMs = 0L,
+                lastStatusKu = if (!entity.isEnabled) "چالاک کرایەوە (Enabled)" else "ڕاگیراوە (Paused)"
+            )
+            dao.updateApiKey(updated)
+        }
+    }
+
+    fun deleteApiKey(id: Int) {
+        viewModelScope.launch {
+            dao.deleteApiKey(id)
+            _statusBannerKu.value = "کلیلی API سڕایەوە"
+        }
+    }
+
+    fun testSingleApiKey(entity: ApiKeyEntity) {
+        viewModelScope.launch {
+            _testingKeyId.value = entity.id
+            try {
+                val (_, msgKu) = aiService.keyRouter.testSingleKey(entity)
+                _statusBannerKu.value = msgKu
+            } finally {
+                _testingKeyId.value = null
+            }
+        }
+    }
+
+    fun resetAllKeyCooldowns() {
+        viewModelScope.launch {
+            dao.resetAllKeyCooldowns()
+            _statusBannerKu.value = "ساردبوونەوەی هەموو کلیلەکان سفر کرایەوە و دووبارە چالاک کران"
+        }
     }
 
     fun setMarketInstType(instType: String) {
@@ -321,7 +433,8 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _aiPredictionState.value = AiPredictionUiState.Loading
             try {
-                val prediction = aiService.generateDeepInstrumentPrediction(telemetry)
+                val (prediction, engineBadge) = aiService.generateDeepInstrumentPrediction(telemetry)
+                _activeAiEngineBadge.value = engineBadge
                 aiPredictionCache[telemetry.ticker.instId] = prediction
                 _aiPredictionState.value = AiPredictionUiState.Success(prediction)
             } catch (e: TimeoutCancellationException) {
@@ -332,7 +445,7 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Firebase AI prediction failed", e)
+                Log.e(TAG, "AI prediction failed", e)
                 _aiPredictionState.value = AiPredictionUiState.Error(
                     e.localizedMessage ?: "دروستکردنی پێشبینی AI سەرکەوتوو نەبوو."
                 )
@@ -351,7 +464,7 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
                     ?: throw IllegalStateException("نەتوانرا وێنەکە بخوێنرێتەوە. تکایە وێنەیەکی تر هەڵبژێرە.")
 
                 _screenshotExitState.value = ScreenshotExitUiState.Analyzing(
-                    stageKu = "قۆناغی ١/٣: خوێندنەوەی کۆین و نرخی کڕین لە وێنەکەتدا بە زیرەکی دەستکرد...",
+                    stageKu = "قۆناغی ١/٣: خوێندنەوەی کۆین و نرخی کڕین لە وێنەکەتدا بە سووڕانەوەی کلیلەکانی AI...",
                     previewBitmap = decodedBitmap
                 )
 
@@ -378,7 +491,7 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
                 _activeTelemetry.value = telemetry
 
                 _screenshotExitState.value = ScreenshotExitUiState.Analyzing(
-                    stageKu = "قۆناغی ٣/٣: هەژمارکردنی وردترین نرخی فرۆشتن و زۆرترین قازانج بە Gemini 3.8 Flash...",
+                    stageKu = "قۆناغی ٣/٣: هەژمارکردنی وردترین نرخی فرۆشتن و زۆرترین قازانج...",
                     previewBitmap = decodedBitmap
                 )
 

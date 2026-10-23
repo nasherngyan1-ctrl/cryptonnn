@@ -10,6 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "watchlist_items")
@@ -44,9 +45,25 @@ data class PriceAlertEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val instId: String,
     val targetPrice: Double,
-    val isAboveTarget: Boolean, // true = alert when price >= targetPrice
+    val isAboveTarget: Boolean,
     val noteKu: String,
     val isTriggered: Boolean = false,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "user_api_keys")
+data class ApiKeyEntity(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val labelKu: String,
+    val providerType: String, // "GEMINI", "GROQ", "OPENROUTER", "OPENAI", "DEEPSEEK"
+    val apiKey: String,
+    val modelName: String,
+    val isEnabled: Boolean = true,
+    val successCount: Int = 0,
+    val rotationFailoverCount: Int = 0,
+    val lastStatusKu: String = "ئامادەیە (Ready)",
+    val lastUsedAtMs: Long = 0L,
+    val cooldownUntilMs: Long = 0L,
     val createdAtMs: Long = System.currentTimeMillis()
 )
 
@@ -81,15 +98,35 @@ interface OkxTradingDao {
 
     @Query("DELETE FROM price_alerts WHERE id = :id")
     suspend fun deletePriceAlert(id: Int)
+
+    // API Keys Management & Rotation Queries
+    @Query("SELECT * FROM user_api_keys ORDER BY id ASC")
+    fun observeApiKeys(): Flow<List<ApiKeyEntity>>
+
+    @Query("SELECT * FROM user_api_keys WHERE isEnabled = 1 ORDER BY id ASC")
+    suspend fun getEnabledApiKeys(): List<ApiKeyEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertApiKey(apiKey: ApiKeyEntity): Long
+
+    @Update
+    suspend fun updateApiKey(apiKey: ApiKeyEntity)
+
+    @Query("DELETE FROM user_api_keys WHERE id = :id")
+    suspend fun deleteApiKey(id: Int)
+
+    @Query("UPDATE user_api_keys SET cooldownUntilMs = 0, lastStatusKu = 'ئامادەیە ( چالاک کرایەوە )'")
+    suspend fun resetAllKeyCooldowns()
 }
 
 @Database(
     entities = [
         WatchlistEntity::class,
         SavedAiSignalEntity::class,
-        PriceAlertEntity::class
+        PriceAlertEntity::class,
+        ApiKeyEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

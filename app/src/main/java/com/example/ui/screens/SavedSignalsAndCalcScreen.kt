@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.local.ApiKeyEntity
 import com.example.data.local.PriceAlertEntity
 import com.example.data.local.SavedAiSignalEntity
 import com.example.data.model.OkxMarketTicker
@@ -76,6 +77,14 @@ fun SavedSignalsAndCalcScreen(
     liveTickers: List<OkxMarketTicker>,
     savedSignals: List<SavedAiSignalEntity>,
     priceAlerts: List<PriceAlertEntity>,
+    apiKeys: List<ApiKeyEntity>,
+    activeAiEngineBadge: String,
+    testingKeyId: Int?,
+    onAddApiKeys: (String, String, String, String) -> Unit,
+    onToggleApiKeyEnabled: (ApiKeyEntity) -> Unit,
+    onDeleteApiKey: (Int) -> Unit,
+    onTestApiKey: (ApiKeyEntity) -> Unit,
+    onResetKeyCooldowns: () -> Unit,
     onDeleteSignal: (Int) -> Unit,
     onAddPriceAlert: (String, Double, String) -> Unit,
     onDeletePriceAlert: (Int) -> Unit,
@@ -98,6 +107,20 @@ fun SavedSignalsAndCalcScreen(
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // 0. Multi-Provider API Key Manager & Automatic Key Rotator
+        item {
+            ApiKeyRotationManagerCard(
+                apiKeys = apiKeys,
+                activeAiEngineBadge = activeAiEngineBadge,
+                testingKeyId = testingKeyId,
+                onAddApiKeys = onAddApiKeys,
+                onToggleKeyEnabled = onToggleApiKeyEnabled,
+                onDeleteKey = onDeleteApiKey,
+                onTestKey = onTestApiKey,
+                onResetCooldowns = onResetKeyCooldowns
+            )
+        }
+
         // 1. OKX Futures Position, Leverage & Liquidation Risk Calculator
         item {
             OkxFuturesRiskCalculatorCard(

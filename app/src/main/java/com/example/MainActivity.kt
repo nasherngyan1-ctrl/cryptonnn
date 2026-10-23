@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Calculate
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -54,6 +55,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.screens.AiDeepIntelligenceScreen
 import com.example.ui.screens.AiScannerAndAdvisorScreen
+import com.example.ui.screens.ApiKeyManagerDialog
 import com.example.ui.screens.MarketDataMatrixScreen
 import com.example.ui.screens.SavedSignalsAndCalcScreen
 import com.example.ui.theme.AiCyan
@@ -69,14 +71,10 @@ import com.example.ui.theme.OkxNeonLime
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.OkxAiViewModel
-import com.example.util.configureAppCheck
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // STEP 1: Configure Firebase App Check with launch intent before any UI or Firebase calls
-        configureAppCheck(this, intent)
 
         enableEdgeToEdge()
         setContent {
@@ -97,6 +95,11 @@ fun OkxKurdAiApp(
     viewModel: OkxAiViewModel = viewModel()
 ) {
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
+    val isApiKeyModalOpen by viewModel.isApiKeyModalOpen.collectAsStateWithLifecycle()
+    val apiKeys by viewModel.apiKeys.collectAsStateWithLifecycle()
+    val activeAiEngineBadge by viewModel.activeAiEngineBadge.collectAsStateWithLifecycle()
+    val testingKeyId by viewModel.testingKeyId.collectAsStateWithLifecycle()
+
     val selectedInstType by viewModel.selectedInstType.collectAsStateWithLifecycle()
     val tickers by viewModel.tickers.collectAsStateWithLifecycle()
     val isMarketLoading by viewModel.isMarketLoading.collectAsStateWithLifecycle()
@@ -129,6 +132,20 @@ fun OkxKurdAiApp(
         }
     }
 
+    if (isApiKeyModalOpen) {
+        ApiKeyManagerDialog(
+            apiKeys = apiKeys,
+            activeAiEngineBadge = activeAiEngineBadge,
+            testingKeyId = testingKeyId,
+            onAddApiKeys = viewModel::addApiKeys,
+            onToggleKeyEnabled = viewModel::toggleApiKeyEnabled,
+            onDeleteKey = viewModel::deleteApiKey,
+            onTestKey = viewModel::testSingleApiKey,
+            onResetCooldowns = viewModel::resetAllKeyCooldowns,
+            onDismiss = { viewModel.setApiKeyModalOpen(false) }
+        )
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = ObsidianBackground,
@@ -136,6 +153,9 @@ fun OkxKurdAiApp(
         topBar = {
             OkxTopBrandBar(
                 activeInstId = selectedInstId,
+                activeAiEngineBadge = activeAiEngineBadge,
+                enabledKeysCount = apiKeys.count { it.isEnabled },
+                onOpenApiKeyModal = { viewModel.setApiKeyModalOpen(true) },
                 onSwitchToAiTab = { viewModel.selectTab(1) }
             )
         },
@@ -214,10 +234,10 @@ fun OkxKurdAiApp(
                     icon = {
                         Icon(
                             imageVector = if (selectedTab == 3) Icons.Filled.Calculate else Icons.Outlined.Calculate,
-                            contentDescription = "سیگناڵ و بژمێر"
+                            contentDescription = "کلیل و بژمێر"
                         )
                     },
-                    label = { Text("سیگناڵ و بژمێر", fontWeight = FontWeight.Bold) },
+                    label = { Text("کلیل و بژمێر", fontWeight = FontWeight.Bold) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = Color.Black,
                         selectedTextColor = OkxNeonLime,
@@ -252,7 +272,8 @@ fun OkxKurdAiApp(
                             text = msg,
                             style = MaterialTheme.typography.bodyMedium,
                             color = OkxNeonLime,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
                         )
                         Text(
                             text = "داخستن",
@@ -338,6 +359,14 @@ fun OkxKurdAiApp(
                         liveTickers = tickers,
                         savedSignals = savedSignals,
                         priceAlerts = priceAlerts,
+                        apiKeys = apiKeys,
+                        activeAiEngineBadge = activeAiEngineBadge,
+                        testingKeyId = testingKeyId,
+                        onAddApiKeys = viewModel::addApiKeys,
+                        onToggleApiKeyEnabled = viewModel::toggleApiKeyEnabled,
+                        onDeleteApiKey = viewModel::deleteApiKey,
+                        onTestApiKey = viewModel::testSingleApiKey,
+                        onResetKeyCooldowns = viewModel::resetAllKeyCooldowns,
                         onDeleteSignal = viewModel::deleteSavedSignal,
                         onAddPriceAlert = viewModel::createPriceAlert,
                         onDeletePriceAlert = viewModel::deletePriceAlert,
@@ -358,6 +387,9 @@ fun OkxKurdAiApp(
 @Composable
 private fun OkxTopBrandBar(
     activeInstId: String,
+    activeAiEngineBadge: String,
+    enabledKeysCount: Int,
+    onOpenApiKeyModal: () -> Unit,
     onSwitchToAiTab: () -> Unit
 ) {
     Surface(
@@ -369,32 +401,33 @@ private fun OkxTopBrandBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f)
             ) {
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .background(OkxNeonLime)
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .padding(horizontal = 7.dp, vertical = 4.dp)
                 ) {
                     Text(
                         text = "OKX AI",
                         fontFamily = MonoNumberFontFamily,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         color = Color.Black
                     )
                 }
                 Column {
                     Text(
                         text = "ئۆکەی ئێکس کورد AI پرۆ",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontSize = 15.sp),
                         color = TextPrimary
                     )
                     Row(
@@ -408,40 +441,76 @@ private fun OkxTopBrandBar(
                                 .background(BullishGreen)
                         )
                         Text(
-                            text = "OKX v5 API + Gemini 3.8 Flash",
+                            text = activeAiEngineBadge,
                             fontFamily = MonoNumberFontFamily,
                             fontSize = 10.sp,
-                            color = TextSecondary
+                            color = TextSecondary,
+                            maxLines = 1
                         )
                     }
                 }
             }
 
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = AiCyanDim,
-                modifier = Modifier
-                    .border(1.dp, AiCyan.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                    .clickable(onClick = onSwitchToAiTab)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                // Quick API Key Manager Button in Top Bar
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = OkxLimeDim,
+                    modifier = Modifier
+                        .border(1.dp, OkxNeonLime.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                        .clickable(onClick = onOpenApiKeyModal)
+                        .testTag("btn_open_api_keys_top")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = AiCyan,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = activeInstId,
-                        fontFamily = MonoNumberFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = AiCyan
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Key,
+                            contentDescription = "کلیلەکانی API",
+                            tint = OkxNeonLime,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "کلیل ($enabledKeysCount)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = OkxNeonLime
+                        )
+                    }
+                }
+
+                // Active Coin Chip
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = AiCyanDim,
+                    modifier = Modifier
+                        .border(1.dp, AiCyan.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .clickable(onClick = onSwitchToAiTab)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = AiCyan,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = activeInstId,
+                            fontFamily = MonoNumberFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = AiCyan
+                        )
+                    }
                 }
             }
         }
