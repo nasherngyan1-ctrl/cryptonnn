@@ -21,8 +21,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -32,7 +34,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,15 +43,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.screens.AiScannerAndAdvisorScreen
 import com.example.ui.screens.ApiKeyManagerDialog
 import com.example.ui.theme.BullishGreen
-import com.example.ui.theme.MonoNumberFontFamily
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.ObsidianBackground
 import com.example.ui.theme.ObsidianCardBorder
 import com.example.ui.theme.ObsidianSurface
+import com.example.ui.theme.ObsidianSurfaceVariant
 import com.example.ui.theme.OkxLimeDim
 import com.example.ui.theme.OkxNeonLime
+import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
-import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.OkxAiViewModel
 
 class MainActivity : ComponentActivity() {
@@ -75,9 +76,9 @@ class MainActivity : ComponentActivity() {
 fun AbdulbasitTraidingApp(
     viewModel: OkxAiViewModel = viewModel()
 ) {
-    val isApiKeyModalOpen by viewModel.isApiKeyModalOpen.collectAsStateWithLifecycle()
+    val isSettingsOpen by viewModel.isApiKeyModalOpen.collectAsStateWithLifecycle()
     val isBackgroundServiceRunning by viewModel.isBackgroundServiceRunning.collectAsStateWithLifecycle()
-    val watchedCoinsCount by viewModel.watchedCoinsCount.collectAsStateWithLifecycle()
+    val watchedCoinsList by viewModel.watchedCoinsList.collectAsStateWithLifecycle()
 
     val apiKeys by viewModel.apiKeys.collectAsStateWithLifecycle()
     val activeAiEngineBadge by viewModel.activeAiEngineBadge.collectAsStateWithLifecycle()
@@ -87,11 +88,14 @@ fun AbdulbasitTraidingApp(
     val chatHistory by viewModel.chatHistory.collectAsStateWithLifecycle()
     val statusBannerKu by viewModel.statusBannerKu.collectAsStateWithLifecycle()
 
-    if (isApiKeyModalOpen) {
+    if (isSettingsOpen) {
         ApiKeyManagerDialog(
             apiKeys = apiKeys,
             activeAiEngineBadge = activeAiEngineBadge,
             testingKeyId = testingKeyId,
+            isBackgroundServiceRunning = isBackgroundServiceRunning,
+            watchedCoinsList = watchedCoinsList,
+            onToggleBackgroundService = viewModel::toggleBackgroundService,
             onAddApiKeys = viewModel::addApiKeys,
             onToggleKeyEnabled = viewModel::toggleApiKeyEnabled,
             onDeleteKey = viewModel::deleteApiKey,
@@ -107,9 +111,10 @@ fun AbdulbasitTraidingApp(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             AbdulbasitTopBar(
-                activeAiEngineBadge = activeAiEngineBadge,
-                enabledKeysCount = apiKeys.count { it.isEnabled },
-                onOpenApiKeyModal = { viewModel.setApiKeyModalOpen(true) }
+                isBackgroundActive = isBackgroundServiceRunning,
+                showClearButton = chatHistory.size > 1,
+                onClearChat = viewModel::clearChatHistory,
+                onOpenSettings = { viewModel.setApiKeyModalOpen(true) }
             )
         }
     ) { innerPadding ->
@@ -123,7 +128,7 @@ fun AbdulbasitTraidingApp(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(OkxLimeDim)
                             .border(1.dp, OkxNeonLime, RoundedCornerShape(10.dp))
@@ -152,12 +157,7 @@ fun AbdulbasitTraidingApp(
                 AiScannerAndAdvisorScreen(
                     advisorState = advisorState,
                     chatHistory = chatHistory,
-                    isBackgroundServiceRunning = isBackgroundServiceRunning,
-                    watchedCoinsCount = watchedCoinsCount,
-                    onToggleBackgroundService = viewModel::toggleBackgroundService,
-                    onAskAdvisor = viewModel::askAiAdvisor,
-                    onWatchCoinTargets = viewModel::watchCoinTargetsInBackground,
-                    onClearChatHistory = viewModel::clearChatHistory
+                    onAskAdvisor = viewModel::askAiAdvisor
                 )
             }
         }
@@ -166,9 +166,10 @@ fun AbdulbasitTraidingApp(
 
 @Composable
 private fun AbdulbasitTopBar(
-    activeAiEngineBadge: String,
-    enabledKeysCount: Int,
-    onOpenApiKeyModal: () -> Unit
+    isBackgroundActive: Boolean,
+    showClearButton: Boolean,
+    onClearChat: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     Surface(
         color = ObsidianSurface,
@@ -179,83 +180,73 @@ private fun AbdulbasitTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.weight(1f)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(OkxNeonLime)
-                        .padding(horizontal = 7.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "AI PRO",
-                        fontFamily = MonoNumberFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        color = Color.Black
-                    )
-                }
-                Column {
-                    Text(
-                        text = "abdulbasit traiding",
-                        style = MaterialTheme.typography.titleMedium.copy(fontSize = 15.sp),
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (isBackgroundActive) BullishGreen else TextMuted)
+                )
+                Text(
+                    text = "abdulbasit traiding",
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (showClearButton) {
+                    IconButton(
+                        onClick = onClearChat,
+                        modifier = Modifier.size(36.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(BullishGreen)
-                        )
-                        Text(
-                            text = activeAiEngineBadge,
-                            fontFamily = MonoNumberFontFamily,
-                            fontSize = 10.sp,
-                            color = TextSecondary,
-                            maxLines = 1
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = "پاککردنەوەی چات",
+                            tint = TextMuted,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
-            }
 
-            // Quick API Key Manager Button
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = OkxLimeDim,
-                modifier = Modifier
-                    .border(1.dp, OkxNeonLime.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
-                    .clickable(onClick = onOpenApiKeyModal)
-                    .testTag("btn_open_api_keys_top")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                // Unified Settings Button (Background Service + API Keys)
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = ObsidianSurfaceVariant,
+                    modifier = Modifier
+                        .border(1.dp, ObsidianCardBorder, RoundedCornerShape(10.dp))
+                        .clickable(onClick = onOpenSettings)
+                        .testTag("btn_open_settings_top")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Key,
-                        contentDescription = "کلیلەکانی API",
-                        tint = OkxNeonLime,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = "کلیل ($enabledKeysCount)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        color = OkxNeonLime
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "سێتینگ",
+                            tint = OkxNeonLime,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "سێتینگ",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = TextPrimary
+                        )
+                    }
                 }
             }
         }

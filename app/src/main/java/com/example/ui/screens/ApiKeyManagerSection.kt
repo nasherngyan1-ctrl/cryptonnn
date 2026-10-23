@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,7 +15,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -21,11 +24,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.Autorenew
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,6 +60,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.ai.ApiProviderType
 import com.example.data.local.ApiKeyEntity
+import com.example.domain.QuantMathEngine
+import com.example.service.WatchedCoinTarget
 import com.example.ui.theme.AiCyan
 import com.example.ui.theme.AiCyanDim
 import com.example.ui.theme.BearishRed
@@ -79,6 +84,9 @@ fun ApiKeyManagerDialog(
     apiKeys: List<ApiKeyEntity>,
     activeAiEngineBadge: String,
     testingKeyId: Int?,
+    isBackgroundServiceRunning: Boolean,
+    watchedCoinsList: List<WatchedCoinTarget>,
+    onToggleBackgroundService: (Boolean) -> Unit,
     onAddApiKeys: (labelKu: String, providerCode: String, rawKeys: String, customModel: String) -> Unit,
     onToggleKeyEnabled: (ApiKeyEntity) -> Unit,
     onDeleteKey: (Int) -> Unit,
@@ -86,6 +94,12 @@ fun ApiKeyManagerDialog(
     onResetCooldowns: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val notificationPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        onToggleBackgroundService(true)
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -100,7 +114,7 @@ fun ApiKeyManagerDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .border(1.dp, AiCyan.copy(alpha = 0.6f), RoundedCornerShape(18.dp))
+                    .border(1.dp, ObsidianCardBorder, RoundedCornerShape(18.dp))
             ) {
                 // Header
                 Row(
@@ -116,18 +130,19 @@ fun ApiKeyManagerDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Key,
+                            imageVector = Icons.Default.Settings,
                             contentDescription = null,
                             tint = OkxNeonLime
                         )
                         Column {
                             Text(
-                                text = "بەڕێوەبەری کلیلەکانی API و سووڕانەوەی ئۆتۆماتیکی",
+                                text = "سێتینگی ئەپ (باگراوند و کلیلەکانی API)",
                                 style = MaterialTheme.typography.titleMedium,
-                                color = OkxNeonLime
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "چەند جۆرە کلیلێک داخڵ بکە تا ئەپەکە خۆکارانە لە نێوانیاندا بیگۆڕێت",
+                                text = "چاودێری باگراوند و گۆڕینی ئۆتۆماتیکی کلیلەکان",
                                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
                                 color = TextSecondary
                             )
@@ -153,8 +168,120 @@ fun ApiKeyManagerDialog(
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState())
                         .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
+                    // 1. Background Operation & Notification Settings Card
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = ObsidianSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(
+                                1.dp,
+                                if (isBackgroundServiceRunning) BullishGreen.copy(alpha = 0.6f) else ObsidianCardBorder,
+                                RoundedCornerShape(14.dp)
+                            )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.NotificationsActive,
+                                        contentDescription = null,
+                                        tint = if (isBackgroundServiceRunning) BullishGreen else TextMuted
+                                    )
+                                    Column {
+                                        Text(
+                                            text = "کارکردن لە باگراوند و نۆتیفیکەیشنی نرخ (24/7)",
+                                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp),
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = if (isBackgroundServiceRunning) {
+                                                "چالاکە — تەنانەت کە لە ئەپەکەش دەردەچیت چاودێری نرخ دەکات"
+                                            } else {
+                                                "ڕاگیراوە — بۆ وەرگرتنی نۆتیفیکەیشنی کڕین و فرۆشتن چالاکی بکە"
+                                            },
+                                            fontSize = 11.sp,
+                                            color = if (isBackgroundServiceRunning) BullishGreen else TextSecondary
+                                        )
+                                    }
+                                }
+
+                                Switch(
+                                    checked = isBackgroundServiceRunning,
+                                    onCheckedChange = { enable ->
+                                        if (enable && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                            notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        } else {
+                                            onToggleBackgroundService(enable)
+                                        }
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.Black,
+                                        checkedTrackColor = BullishGreen
+                                    )
+                                )
+                            }
+
+                            if (watchedCoinsList.isNotEmpty()) {
+                                HorizontalDivider(color = ObsidianCardBorder)
+                                Text(
+                                    text = "دراوە چاودێریکراوەکانی ئێستا لە باگراوند (${watchedCoinsList.size}):",
+                                    fontSize = 11.sp,
+                                    color = AiCyan,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                watchedCoinsList.forEach { target ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(ObsidianSurfaceVariant)
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = target.instId,
+                                            fontFamily = MonoNumberFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = OkxNeonLime
+                                        )
+                                        val details = buildString {
+                                            if (target.buyTargetPrice > 0.0) {
+                                                append("کڕین: $${QuantMathEngine.formatCryptoPrice(target.buyTargetPrice)}  ")
+                                            }
+                                            if (target.sellTargetPrice > 0.0) {
+                                                append("فرۆشتن: $${QuantMathEngine.formatCryptoPrice(target.sellTargetPrice)}")
+                                            }
+                                        }.ifBlank { "چاودێری گشتی نرخ" }
+                                        Text(
+                                            text = details,
+                                            fontFamily = MonoNumberFontFamily,
+                                            fontSize = 11.sp,
+                                            color = TextPrimary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. API Key & Auto-Rotation Section
                     ApiKeyRotationManagerCard(
                         apiKeys = apiKeys,
                         activeAiEngineBadge = activeAiEngineBadge,
@@ -188,156 +315,96 @@ fun ApiKeyRotationManagerCard(
     var customModelInput by remember { mutableStateOf("") }
 
     val now = System.currentTimeMillis()
-    val enabledCount = apiKeys.count { it.isEnabled }
     val readyCount = apiKeys.count { it.isEnabled && it.cooldownUntilMs <= now }
     val cooldownCount = apiKeys.count { it.isEnabled && it.cooldownUntilMs > now }
-    val totalSuccess = apiKeys.sumOf { it.successCount }
-    val totalRotations = apiKeys.sumOf { it.rotationFailoverCount }
 
     val providerOptions = remember {
         listOf(
-            "AUTO" to "ناسینەوەی ئۆتۆماتیکی (Auto)",
-            ApiProviderType.GEMINI.id to "Google Gemini",
-            ApiProviderType.GROQ.id to "Groq (خێرا)",
+            "AUTO" to "ئۆتۆماتیکی (Auto)",
+            ApiProviderType.GEMINI.id to "Gemini",
+            ApiProviderType.GROQ.id to "Groq",
             ApiProviderType.OPENROUTER.id to "OpenRouter",
-            ApiProviderType.OPENAI.id to "OpenAI (GPT)",
+            ApiProviderType.OPENAI.id to "OpenAI",
             ApiProviderType.DEEPSEEK.id to "DeepSeek"
         )
     }
 
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(14.dp),
         color = ObsidianSurface,
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, AiCyan.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+            .border(1.dp, ObsidianCardBorder, RoundedCornerShape(14.dp))
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Title Row
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Autorenew,
-                        contentDescription = null,
-                        tint = AiCyan
+                Icon(
+                    imageVector = Icons.Default.Autorenew,
+                    contentDescription = null,
+                    tint = OkxNeonLime
+                )
+                Column {
+                    Text(
+                        text = "کلیلەکانی API و گۆڕینی ئۆتۆماتیکی",
+                        style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp),
+                        color = OkxNeonLime,
+                        fontWeight = FontWeight.Bold
                     )
-                    Column {
-                        Text(
-                            text = "سیستەمی فرە-کلیلی API و گۆڕینی ئۆتۆماتیکی (Auto-Key Rotation)",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = AiCyan
-                        )
-                        Text(
-                            text = "پشتگیری Gemini، Groq، OpenRouter، OpenAI و DeepSeek دەکات بە سووڕانەوەی خۆکارانە",
-                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                            color = TextSecondary
-                        )
-                    }
+                    Text(
+                        text = "کلیلە ئامادەکان: $readyCount لە ${apiKeys.size} • پشتگیری Gemini, Groq, OpenRouter, OpenAI",
+                        fontSize = 11.sp,
+                        color = TextSecondary
+                    )
                 }
             }
 
-            // Live Rotation Status Telemetry Box
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(ObsidianSurfaceVariant)
-                    .border(1.dp, ObsidianCardBorder, RoundedCornerShape(12.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(if (readyCount > 0) BullishGreen else OkxNeonLime)
-                    )
-                    Text(
-                        text = "بزوێنەری چالاکی ئێستا: $activeAiEngineBadge",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = OkxNeonLime
-                    )
-                }
-
-                Row(
+            if (cooldownCount > 0) {
+                OutlinedButton(
+                    onClick = onResetCooldowns,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = WarningAmber)
                 ) {
-                    KeyMetricBadge("کلیلە ئامادەکان", "$readyCount / ${apiKeys.size}", BullishGreen)
-                    KeyMetricBadge("لە پشوودا (429)", "$cooldownCount", if (cooldownCount > 0) WarningAmber else TextSecondary)
-                    KeyMetricBadge("وەڵامی سەرکەوتوو", "$totalSuccess", AiCyan)
-                    KeyMetricBadge("گۆڕینی ئۆتۆماتیکی", "$totalRotations", OkxNeonLime)
-                }
-
-                if (cooldownCount > 0) {
-                    OutlinedButton(
-                        onClick = onResetCooldowns,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = WarningAmber)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Autorenew,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.size(6.dp))
-                        Text("چالاککردنەوەی دەستبەجێی کلیلە وەستاوەکان ($cooldownCount)")
-                    }
+                    Text("چالاککردنەوەی کلیلە وەستاوەکان ($cooldownCount)")
                 }
             }
 
             // Provider Selector Chips
-            Text(
-                text = "١. جۆری کلیل هەڵبژێرە (یان لێگەڕێ ئەپەکە خۆی بیناسێتەوە):",
-                style = MaterialTheme.typography.labelLarge,
-                color = TextPrimary
-            )
-
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 providerOptions.forEach { (code, titleKu) ->
                     val isSelected = selectedProviderCode == code
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (isSelected) AiCyan else ObsidianSurfaceVariant)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isSelected) OkxNeonLime else ObsidianSurfaceVariant)
                             .border(
                                 1.dp,
-                                if (isSelected) AiCyan else ObsidianCardBorder,
-                                RoundedCornerShape(10.dp)
+                                if (isSelected) OkxNeonLime else ObsidianCardBorder,
+                                RoundedCornerShape(8.dp)
                             )
                             .clickable {
                                 selectedProviderCode = code
-                                if (code != "AUTO") {
-                                    val p = ApiProviderType.fromId(code)
-                                    customModelInput = p.defaultModel
+                                customModelInput = if (code != "AUTO") {
+                                    ApiProviderType.fromId(code).defaultModel
                                 } else {
-                                    customModelInput = ""
+                                    ""
                                 }
                             }
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Text(
                             text = titleKu,
-                            style = MaterialTheme.typography.labelLarge,
+                            fontSize = 11.sp,
                             color = if (isSelected) Color.Black else TextPrimary,
                             fontWeight = FontWeight.Bold
                         )
@@ -345,22 +412,21 @@ fun ApiKeyRotationManagerCard(
                 }
             }
 
-            // Multi-Key Input Field
             OutlinedTextField(
                 value = rawKeysInput,
                 onValueChange = { rawKeysInput = it },
                 label = {
-                    Text("٢. کلیلی API لێرە دابنێ (دەتوانیت چەند کلیلێک لەسەر هێڵی جیاواز دابنێیت)")
+                    Text("کلیلی API لێرە دابنێ (دەتوانیت چەند کلیلێک بەیەکەوە دابنێیت)")
                 },
                 placeholder = {
                     Text(
-                        text = "AIzaSy...\ngsk_...\nsk-or-v1-...",
+                        text = "AIzaSy...\ngsk_...",
                         fontFamily = MonoNumberFontFamily,
                         fontSize = 12.sp
                     )
                 },
                 minLines = 2,
-                maxLines = 5,
+                maxLines = 4,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("input_api_keys_bulk"),
@@ -369,44 +435,6 @@ fun ApiKeyRotationManagerCard(
                     unfocusedBorderColor = ObsidianCardBorder
                 )
             )
-
-            // Optional Label & Custom Model Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = labelInput,
-                    onValueChange = { labelInput = it },
-                    label = { Text("ناوی کلیل (ئارەزوومەندانە)") },
-                    placeholder = { Text("نموونە: کلیلی سەرەکی") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AiCyan,
-                        unfocusedBorderColor = ObsidianCardBorder
-                    )
-                )
-                OutlinedTextField(
-                    value = customModelInput,
-                    onValueChange = { customModelInput = it },
-                    label = { Text("مۆدێل (ئۆتۆماتیکی)") },
-                    placeholder = {
-                        val hintModel = if (selectedProviderCode == "AUTO") {
-                            "gemini-2.5-flash"
-                        } else {
-                            ApiProviderType.fromId(selectedProviderCode).defaultModel
-                        }
-                        Text(hintModel, fontFamily = MonoNumberFontFamily, fontSize = 11.sp)
-                    },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AiCyan,
-                        unfocusedBorderColor = ObsidianCardBorder
-                    )
-                )
-            }
 
             Button(
                 onClick = {
@@ -434,93 +462,72 @@ fun ApiKeyRotationManagerCard(
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
-                Spacer(modifier = Modifier.size(8.dp))
+                Spacer(modifier = Modifier.size(6.dp))
                 Text(
-                    text = "زیادکردنی کلیل و چالاککردنی سووڕانەوەی ئۆتۆماتیکی",
+                    text = "زیادکردنی کلیل",
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            // Saved Keys List
-            if (apiKeys.isEmpty()) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = OkxLimeDim,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, OkxNeonLime.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                ) {
-                    Text(
-                        text = "هێشتا هیچ کلیلێکی تایبەت داخڵ نەکراوە. ئەپەکە لە کاتی نەبوونی کلیلدا بزوێنەری ناوخۆیی و ژمێریاری فرە-تایمفرەیمی OKX بەکاردەهێنێت. بۆ بەکارهێنانی ڕاستەوخۆی زیرەکی دەستکرد لەسەر مۆبایلەکەت، ١ یان چەند کلیلێکی بێبەرامبەری Google Gemini (لە aistudio.google.com) یان Groq یان OpenRouter لە سەرەوە داخڵ بکە.",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
-                        color = TextPrimary,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
-            } else {
-                Text(
-                    text = "کلیلە پاشەکەوتکراوەکان لە سیستەمی سووڕانەوەدا (${apiKeys.size}):",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = OkxNeonLime
-                )
-
+            if (apiKeys.isNotEmpty()) {
                 apiKeys.forEachIndexed { idx, item ->
                     val inCooldown = item.cooldownUntilMs > now
-                    val remainingCooldownSec = ((item.cooldownUntilMs - now) / 1000L).coerceAtLeast(0L)
-                    val borderColor = when {
-                        !item.isEnabled -> ObsidianCardBorder
-                        inCooldown -> WarningAmber.copy(alpha = 0.7f)
-                        else -> BullishGreen.copy(alpha = 0.6f)
-                    }
-
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = ObsidianSurfaceVariant,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+                            .border(
+                                1.dp,
+                                if (item.isEnabled) BullishGreen.copy(alpha = 0.4f) else ObsidianCardBorder,
+                                RoundedCornerShape(10.dp)
+                            )
                     ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "#${idx + 1} ${item.providerType} • ${maskApiKey(item.apiKey)}",
+                                    fontFamily = MonoNumberFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = if (item.isEnabled) TextPrimary else TextMuted
+                                )
+                                Text(
+                                    text = if (inCooldown) "لە پشووی کاتیدایە" else item.lastStatusKu,
+                                    fontSize = 10.sp,
+                                    color = if (inCooldown) WarningAmber else BullishGreen
+                                )
+                            }
+
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .background(AiCyanDim)
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = "#${idx + 1} ${item.providerType}",
-                                                fontFamily = MonoNumberFontFamily,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 11.sp,
-                                                color = AiCyan
-                                            )
-                                        }
-                                        Text(
-                                            text = item.labelKu,
-                                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp),
-                                            color = if (item.isEnabled) TextPrimary else TextMuted
+                                IconButton(
+                                    onClick = { onTestKey(item) },
+                                    enabled = testingKeyId != item.id,
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    if (testingKeyId == item.id) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 2.dp,
+                                            color = AiCyan
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.NetworkCheck,
+                                            contentDescription = "پشکنین",
+                                            tint = AiCyan,
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
-
-                                    Text(
-                                        text = "کلیل: ${maskApiKey(item.apiKey)} • مۆدێل: ${item.modelName}",
-                                        fontFamily = MonoNumberFontFamily,
-                                        fontSize = 11.sp,
-                                        color = TextSecondary
-                                    )
                                 }
 
                                 Switch(
@@ -531,80 +538,17 @@ fun ApiKeyRotationManagerCard(
                                         checkedTrackColor = BullishGreen
                                     )
                                 )
-                            }
 
-                            // Status & Counters Row
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val statusDisplay = if (inCooldown) {
-                                    "لە پشووی کاتیدایە (${remainingCooldownSec}s ماوە) • چووە سەر کلیلی دواتر"
-                                } else {
-                                    item.lastStatusKu
-                                }
-                                Text(
-                                    text = statusDisplay,
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                                    color = when {
-                                        !item.isEnabled -> TextMuted
-                                        inCooldown -> WarningAmber
-                                        else -> BullishGreen
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "سەرکەوتوو: ${item.successCount} جار  |  گۆڕانی ئۆتۆماتیکی: ${item.rotationFailoverCount} جار",
-                                    fontFamily = MonoNumberFontFamily,
-                                    fontSize = 11.sp,
-                                    color = TextSecondary
-                                )
-
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                IconButton(
+                                    onClick = { onDeleteKey(item.id) },
+                                    modifier = Modifier.size(32.dp)
                                 ) {
-                                    OutlinedButton(
-                                        onClick = { onTestKey(item) },
-                                        enabled = testingKeyId != item.id,
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = AiCyan)
-                                    ) {
-                                        if (testingKeyId == item.id) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(14.dp),
-                                                strokeWidth = 2.dp,
-                                                color = AiCyan
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.Default.NetworkCheck,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(15.dp)
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.size(4.dp))
-                                        Text(
-                                            text = "پشکنین",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-
-                                    IconButton(onClick = { onDeleteKey(item.id) }) {
-                                        Icon(
-                                            imageVector = Icons.Default.Delete,
-                                            contentDescription = "سڕینەوەی کلیل",
-                                            tint = BearishRed
-                                        )
-                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "سڕینەوە",
+                                        tint = BearishRed,
+                                        modifier = Modifier.size(18.dp)
+                                    )
                                 }
                             }
                         }
@@ -612,28 +556,6 @@ fun ApiKeyRotationManagerCard(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun KeyMetricBadge(
-    label: String,
-    value: String,
-    color: Color
-) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 10.sp),
-            color = TextMuted
-        )
-        Text(
-            text = value,
-            fontFamily = MonoNumberFontFamily,
-            fontWeight = FontWeight.Bold,
-            fontSize = 12.sp,
-            color = color
-        )
     }
 }
 

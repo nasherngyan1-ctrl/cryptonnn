@@ -76,6 +76,7 @@ class TradingBackgroundService : Service() {
                 referencePriceAtSetup = refPx
             )
             _watchedCoinsCount.value = watchedCoins.size
+            _watchedCoinsList.value = watchedCoins.values.toList()
         }
 
         _isServiceRunning.value = true
@@ -270,6 +271,9 @@ class TradingBackgroundService : Service() {
 
         private val _watchedCoinsCount = MutableStateFlow(0)
         val watchedCoinsCount: StateFlow<Int> = _watchedCoinsCount.asStateFlow()
+
+        private val _watchedCoinsList = MutableStateFlow<List<WatchedCoinTarget>>(emptyList())
+        val watchedCoinsList: StateFlow<List<WatchedCoinTarget>> = _watchedCoinsList.asStateFlow()
 
         fun ensureNotificationChannels(context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
