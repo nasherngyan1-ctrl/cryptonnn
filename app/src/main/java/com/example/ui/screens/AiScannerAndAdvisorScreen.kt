@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,37 +16,42 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,12 +62,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import android.graphics.BitmapFactory
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.model.AiMarketOpportunityItem
-import com.example.data.model.AiScreenshotExitPlan
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.example.domain.QuantMathEngine
 import com.example.ui.theme.AiCyan
 import com.example.ui.theme.AiCyanDim
@@ -76,912 +87,521 @@ import com.example.ui.theme.OkxNeonLime
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
-import com.example.ui.theme.WarningAmber
-import com.example.ui.theme.WarningAmberDim
 import com.example.ui.viewmodel.AdvisorChatMessage
 import com.example.ui.viewmodel.AiAdvisorUiState
-import com.example.ui.viewmodel.AiScannerUiState
-import com.example.ui.viewmodel.ScreenshotExitUiState
-import java.util.Locale
 
 @Composable
 fun AiScannerAndAdvisorScreen(
-    activeInstId: String,
-    screenshotExitState: ScreenshotExitUiState,
-    scannerState: AiScannerUiState,
     advisorState: AiAdvisorUiState,
     chatHistory: List<AdvisorChatMessage>,
-    onAnalyzeScreenshotExit: (Uri, String) -> Unit,
-    onSaveExitPlanAsSignal: (AiScreenshotExitPlan) -> Unit,
-    onSetPriceAlert: (String, Double, String) -> Unit,
-    onRunMarketScanner: () -> Unit,
-    onAskAdvisor: (String, Uri?) -> Unit,
-    onInspectCoin: (String) -> Unit
+    isBackgroundServiceRunning: Boolean,
+    watchedCoinsCount: Int,
+    onToggleBackgroundService: (Boolean) -> Unit,
+    onAskAdvisor: (String, List<Uri>) -> Unit,
+    onWatchCoinTargets: (String, Double, Double, Double, Double) -> Unit,
+    onClearChatHistory: () -> Unit
 ) {
-    var screenshotNoteInput by remember { mutableStateOf("") }
-    var selectedScreenshotUri by remember { mutableStateOf<Uri?>(null) }
-
     var questionInput by remember { mutableStateOf("") }
-    var chatAttachedUri by remember { mutableStateOf<Uri?>(null) }
+    var attachedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
 
-    // Zero-permission Android Photo Picker for the Screenshot Exit Analyzer
-    val screenshotExitLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            selectedScreenshotUri = uri
-            onAnalyzeScreenshotExit(uri, screenshotNoteInput)
+    val listState = rememberLazyListState()
+
+    // Auto-scroll to bottom when new chat messages or streaming updates arrive
+    LaunchedEffect(chatHistory.size, advisorState) {
+        val totalItems = chatHistory.size + (if (advisorState !is AiAdvisorUiState.Idle && advisorState !is AiAdvisorUiState.Success) 1 else 0)
+        if (totalItems > 0) {
+            listState.animateScrollToItem(totalItems - 1)
         }
     }
 
-    // Zero-permission Android Photo Picker for attaching an image to the AI Chat Advisor
-    val chatPhotoLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            chatAttachedUri = uri
+    val notificationPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        onToggleBackgroundService(true)
+    }
+
+    // Unlimited Multi-Image Photo Picker (appends newly selected images without any 2-image cap)
+    val unlimitedPhotosLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            attachedImageUris = (attachedImageUris + uris).distinct()
         }
     }
 
-    val quickPrompts = remember(activeInstId) {
+    val quickPrompts = remember {
         listOf(
-            "من $activeInstId ـم کڕیوە، لە چ نرخێکدا بیفرۆشم بۆ زۆرترین قازانج؟",
-            "باشترین خاڵی کڕین و فرۆشتن بۆ $activeInstId لەم چرکەیەدا چەندە؟",
-            "پلانی مامەڵەی فیوچەرز (Long یان Short) بۆ $activeInstId بە لیڤرێجی 5x دابنێ",
-            "کام دراوی ناو OKX ئێستا کەمترین مەترسی و بەرزترین ئەگەری قازانجی هەیە؟"
+            "کام دراو ئێستا باشترینە بۆ کڕین؟ پێم بڵێ لە چەند بیکڕم و کە گەیشتە چەند بیفرۆشم؟",
+            "بیتکۆین (BTC) لە چ نرخێکدا بکڕم و کە گەیشتە چەند بیفرۆشم بۆ قازانج؟",
+            "سۆلانا (SOL) ئێستا بیکڕم یان چاوەڕێ بکەم؟ نرخی کڕین و فرۆشتنم پێ بڵێ",
+            "ئیتیریۆم (ETH) و پێپێ (PEPE) شیکاری بکە بۆ کڕین و فرۆشتنی ئەمڕۆ"
         )
     }
 
-    LazyColumn(
+    val attachedCount = attachedImageUris.size
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("ai_scanner_advisor_list"),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .imePadding()
+            .testTag("general_crypto_ai_chat_screen")
     ) {
-        // 1. Featured Card: AI Screenshot Profit & Exit Optimizer ("وێنەی کڕین بنێرە -> لە چەند بیفرۆشم قازانجتە")
-        item {
-            ScreenshotProfitExitCard(
-                screenshotNoteInput = screenshotNoteInput,
-                selectedScreenshotUri = selectedScreenshotUri,
-                screenshotExitState = screenshotExitState,
-                onNoteChange = { screenshotNoteInput = it },
-                onPickImage = {
-                    screenshotExitLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                    )
-                },
-                onReAnalyze = {
-                    selectedScreenshotUri?.let { uri ->
-                        onAnalyzeScreenshotExit(uri, screenshotNoteInput)
-                    }
-                },
-                onSavePlanAsSignal = onSaveExitPlanAsSignal,
-                onSetPriceAlert = onSetPriceAlert,
-                onInspectCoin = onInspectCoin
-            )
-        }
-
-        // 2. AI Market-Wide Opportunity Scanner Card
-        item {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = ObsidianSurface,
+        // 1. Compact Background Monitor & Notification Bar
+        Surface(
+            color = ObsidianSurface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, ObsidianCardBorder)
+        ) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, ObsidianCardBorder, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(OkxLimeDim),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Radar,
-                                    contentDescription = null,
-                                    tint = OkxNeonLime
-                                )
-                            }
-                            Column {
-                                Text(
-                                    text = "سکێنەری زیرەکی دەستکرد بۆ تەواوی بازاڕی OKX",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = OkxNeonLime
-                                )
-                                Text(
-                                    text = "دۆزینەوەی ٤ بەهێزترین دەرفەتی مامەڵە لەلایەن Gemini 3.8 Flash",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                                    color = TextSecondary
-                                )
-                            }
-                        }
-                    }
-
-                    Button(
-                        onClick = onRunMarketScanner,
-                        enabled = scannerState !is AiScannerUiState.Scanning,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("btn_run_ai_scanner"),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ObsidianSurfaceVariant,
-                            contentColor = OkxNeonLime
-                        )
-                    ) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = null)
-                        Spacer(modifier = Modifier.size(8.dp))
+                    Icon(
+                        imageVector = Icons.Default.NotificationsActive,
+                        contentDescription = null,
+                        tint = if (isBackgroundServiceRunning) BullishGreen else TextMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Column {
                         Text(
-                            text = if (scannerState is AiScannerUiState.Scanning) {
-                                "خەریکی پشکنینی زیندووی بازاڕی OKX ـە..."
+                            text = if (isBackgroundServiceRunning) {
+                                "نۆتیفیکەیشن و چاودێری نرخی دراوەکان لە باگراوند چالاکە (${watchedCoinsCount.coerceAtLeast(1)} دراو)"
                             } else {
-                                "پشکنینی گشتی بازاڕ و دەرکردنی باشترین سیگناڵەکانی ئێستا"
+                                "چاودێری باگراوند و نۆتیفیکەیشنی نرخ ڕاگیراوە"
                             },
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
+                            color = if (isBackgroundServiceRunning) BullishGreen else TextSecondary,
                             fontWeight = FontWeight.Bold
                         )
                     }
+                }
 
-                    when (scannerState) {
-                        is AiScannerUiState.Idle -> {
-                            Text(
-                                text = "کرتە بکە تاوەکو زیرەکی دەستکرد ١٨ پڕمامەڵەترین دراوی OKX بپشکنێت و باشترین خاڵەکانی کڕین و فرۆشتنت پێ بدات.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextSecondary
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Switch(
+                        checked = isBackgroundServiceRunning,
+                        onCheckedChange = { enable ->
+                            if (enable && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                onToggleBackgroundService(enable)
+                            }
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = BullishGreen
+                        )
+                    )
+
+                    if (chatHistory.size > 1) {
+                        IconButton(
+                            onClick = onClearChatHistory,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteSweep,
+                                contentDescription = "پاککردنەوەی چات",
+                                tint = TextMuted,
+                                modifier = Modifier.size(18.dp)
                             )
-                        }
-
-                        is AiScannerUiState.Scanning -> {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 12.dp),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                CircularProgressIndicator(
-                                    color = OkxNeonLime,
-                                    modifier = Modifier.size(26.dp)
-                                )
-                                Spacer(modifier = Modifier.size(10.dp))
-                                Text(
-                                    text = "شیکردنەوەی قەبارە، ناجێگیری و گوڕی نرخ لە OKX...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = TextPrimary
-                                )
-                            }
-                        }
-
-                        is AiScannerUiState.Error -> {
-                            Text(
-                                text = scannerState.message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = BearishRed
-                            )
-                        }
-
-                        is AiScannerUiState.Success -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(ObsidianSurfaceVariant)
-                                    .padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "دۆخی گشتی بازاڕی OKX:",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = AiCyan
-                                )
-                                Text(
-                                    text = scannerState.marketRegimeKu,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = TextPrimary
-                                )
-                            }
-
-                            scannerState.opportunities.forEach { opp ->
-                                AiOpportunityRowCard(
-                                    opportunity = opp,
-                                    onClick = { onInspectCoin(opp.instId) }
-                                )
-                            }
                         }
                     }
                 }
             }
         }
 
-        // 3. Live Streaming AI Quantitative Advisor Section (with Image Attachment support)
-        item {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = ObsidianSurface,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, AiCyan.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "ڕاوێژکاری ڕاستەوخۆی زیرەکی دەستکرد (دەق + وێنە + داتای OKX)",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = AiCyan
-                    )
-                    Text(
-                        text = "دەتوانیت پرسیار بنووسیت یان وێنە هاوپێچ بکەیت؛ AI ڕاستەوخۆ ژمارە زیندووەکانی $activeInstId و بازاڕی OKX دەخوێنێتەوە.",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
-                        color = TextSecondary
-                    )
+        // 2. Full-Screen Chat Messages Thread
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .testTag("crypto_chat_messages_list"),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(
+                items = chatHistory,
+                key = { it.id }
+            ) { msg ->
+                ChatMessageBubble(
+                    msg = msg,
+                    onWatchCoinTargets = onWatchCoinTargets
+                )
+            }
 
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        items(quickPrompts) { prompt ->
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(AiCyanDim)
-                                    .border(1.dp, AiCyan.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
-                                    .clickable { onAskAdvisor(prompt, null) }
-                                    .padding(horizontal = 10.dp, vertical = 8.dp)
-                            ) {
-                                Text(
-                                    text = prompt,
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                                    color = AiCyan
-                                )
-                            }
-                        }
-                    }
-
-                    if (chatAttachedUri != null) {
-                        Row(
+            // Streaming / Loading Indicator Bubble at bottom of chat
+            when (advisorState) {
+                is AiAdvisorUiState.Loading -> {
+                    item(key = "chat_loading_bubble") {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = ObsidianSurface,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(OkxLimeDim)
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .border(1.dp, AiCyan.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
                         ) {
-                            Text(
-                                text = "وێنەیەک ئامادەیە بۆ ناردن لەگەڵ پرسیارەکەت",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = OkxNeonLime
-                            )
-                            Text(
-                                text = "لابردن",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = BearishRed,
-                                modifier = Modifier.clickable { chatAttachedUri = null }
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        IconButton(
-                            onClick = {
-                                chatPhotoLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(ObsidianSurfaceVariant)
-                                .testTag("btn_attach_chat_photo")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AddPhotoAlternate,
-                                contentDescription = "هاوپێچکردنی وێنە",
-                                tint = OkxNeonLime
-                            )
-                        }
-
-                        OutlinedTextField(
-                            value = questionInput,
-                            onValueChange = { questionInput = it },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("ai_advisor_input"),
-                            placeholder = {
-                                Text(
-                                    text = "پرسیار بنووسە یان وێنە بنێرە...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = TextMuted
-                                )
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AiCyan,
-                                unfocusedBorderColor = ObsidianCardBorder,
-                                focusedContainerColor = ObsidianSurfaceVariant,
-                                unfocusedContainerColor = ObsidianSurfaceVariant
-                            )
-                        )
-
-                        IconButton(
-                            onClick = {
-                                if (questionInput.isNotBlank() || chatAttachedUri != null) {
-                                    onAskAdvisor(questionInput, chatAttachedUri)
-                                    questionInput = ""
-                                    chatAttachedUri = null
-                                }
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(AiCyan)
-                                .testTag("btn_send_ai_advisor")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "ناردنی پرسیار بۆ AI",
-                                tint = Color.Black
-                            )
-                        }
-                    }
-
-                    when (advisorState) {
-                        is AiAdvisorUiState.Loading -> {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(ObsidianSurfaceVariant)
-                                    .padding(12.dp),
+                                modifier = Modifier.padding(14.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                CircularProgressIndicator(color = AiCyan, modifier = Modifier.size(22.dp))
-                                Text(
-                                    text = "Gemini AI خەریکی ئامادەکردنی وەڵامی ژمارەییە...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = TextPrimary
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    color = OkxNeonLime,
+                                    strokeWidth = 2.5.dp
                                 )
+                                Column {
+                                    Text(
+                                        text = advisorState.stageKu,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = OkxNeonLime,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "دەتوانیت لە ئەپەکەش بچیتە دەرەوە؛ شیکردنەوەکە لە باگراوند تەواو دەبێت و نۆتیفیکەیشنت بۆ دێت",
+                                        fontSize = 10.sp,
+                                        color = TextSecondary
+                                    )
+                                }
                             }
                         }
+                    }
+                }
 
-                        is AiAdvisorUiState.Streaming -> {
+                is AiAdvisorUiState.Streaming -> {
+                    item(key = "chat_streaming_bubble") {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = ObsidianSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, OkxNeonLime, RoundedCornerShape(16.dp))
+                        ) {
                             Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(AiCyanDim)
-                                    .border(1.dp, AiCyan, RoundedCornerShape(12.dp))
-                                    .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
-                                    text = "وەڵامی ڕاستەوخۆی زیرەکی دەستکرد (پەخشی زیندوو):",
+                                    text = "🤖 ڕاوێژکاری AI (خەریکی نووسینە...)",
                                     style = MaterialTheme.typography.labelLarge,
-                                    color = AiCyan
+                                    color = OkxNeonLime,
+                                    fontWeight = FontWeight.Bold
                                 )
                                 Text(
                                     text = advisorState.partialText,
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
                                     color = TextPrimary
                                 )
                             }
                         }
+                    }
+                }
 
-                        is AiAdvisorUiState.Error -> {
+                is AiAdvisorUiState.Error -> {
+                    item(key = "chat_error_bubble") {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = BearishRedDim,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, BearishRed, RoundedCornerShape(14.dp))
+                        ) {
                             Text(
                                 text = advisorState.message,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = BearishRed
-                            )
-                        }
-
-                        else -> Unit
-                    }
-                }
-            }
-        }
-
-        // 4. Chat History Messages
-        items(
-            items = chatHistory.reversed(),
-            key = { it.id }
-        ) { msg ->
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = if (msg.isUser) ObsidianSurfaceVariant else ObsidianSurface,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(
-                        1.dp,
-                        if (msg.isUser) ObsidianCardBorder else AiCyan.copy(alpha = 0.45f),
-                        RoundedCornerShape(14.dp)
-                    )
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = if (msg.isUser) {
-                                if (msg.hasAttachedImage) "پرسیاری بازرگان + وێنەی هاوپێچ" else "پرسیاری بازرگان"
-                            } else {
-                                "ڕاپۆرتی زیرەکی دەستکرد (Gemini 3.8 Flash)"
-                            },
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (msg.isUser) OkxNeonLime else AiCyan
-                        )
-                        if (msg.relatedInstId != null) {
-                            Text(
-                                text = msg.relatedInstId,
-                                fontFamily = MonoNumberFontFamily,
-                                fontSize = 11.sp,
-                                color = TextSecondary
+                                color = BearishRed,
+                                modifier = Modifier.padding(12.dp)
                             )
                         }
                     }
-                    Text(
-                        text = msg.text,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = TextPrimary
-                    )
                 }
+
+                else -> {}
             }
         }
-    }
-}
 
-@Composable
-private fun ScreenshotProfitExitCard(
-    screenshotNoteInput: String,
-    selectedScreenshotUri: Uri?,
-    screenshotExitState: ScreenshotExitUiState,
-    onNoteChange: (String) -> Unit,
-    onPickImage: () -> Unit,
-    onReAnalyze: () -> Unit,
-    onSavePlanAsSignal: (AiScreenshotExitPlan) -> Unit,
-    onSetPriceAlert: (String, Double, String) -> Unit,
-    onInspectCoin: (String) -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = ObsidianSurface,
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.5.dp, OkxNeonLime, RoundedCornerShape(16.dp))
-            .testTag("screenshot_profit_exit_card")
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        // 3. Bottom Chat Input Composer (Unlimited Multi-Image Attachments + Quick Prompts)
+        Surface(
+            color = ObsidianSurface,
+            tonalElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, ObsidianCardBorder)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(OkxLimeDim),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AddPhotoAlternate,
-                        contentDescription = null,
-                        tint = OkxNeonLime,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-                Column {
-                    Text(
-                        text = "وێنەی کڕینەکەت بنێرە — پێت دەڵێم لە چەند بیفرۆشە قازانجتە!",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = OkxNeonLime
-                    )
-                    Text(
-                        text = "زیرەکی دەستکرد وێنەی مامەڵەکەت دەخوێنێتەوە و بەپێی داتای زیندووی ئێستای OKX باشترین نرخی فرۆشتنت بۆ دیاری دەکات",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                        color = TextSecondary
-                    )
-                }
-            }
-
-            OutlinedTextField(
-                value = screenshotNoteInput,
-                onValueChange = onNoteChange,
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("screenshot_note_input"),
-                placeholder = {
-                    Text(
-                        text = "تێبینی ئارەزوومەندانە (نموونە: بە ١٠٠ دۆلار کڕیومە، کەی بیفرۆشم؟)...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextMuted
-                    )
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = OkxNeonLime,
-                    unfocusedBorderColor = ObsidianCardBorder,
-                    focusedContainerColor = ObsidianSurfaceVariant,
-                    unfocusedContainerColor = ObsidianSurfaceVariant
-                )
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Button(
-                    onClick = onPickImage,
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("btn_pick_trade_screenshot"),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = OkxNeonLime,
-                        contentColor = Color.Black
-                    )
+                // Quick Suggestion Chips
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "هەڵبژاردنی وێنەی کڕین / مامەڵە",
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                if (selectedScreenshotUri != null) {
-                    OutlinedButton(
-                        onClick = onReAnalyze,
-                        modifier = Modifier.testTag("btn_reanalyze_screenshot")
-                    ) {
-                        Text("دووبارە شیکاری", color = AiCyan)
-                    }
-                }
-            }
-
-            when (screenshotExitState) {
-                is ScreenshotExitUiState.Idle -> Unit
-
-                is ScreenshotExitUiState.Analyzing -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(ObsidianSurfaceVariant)
-                            .padding(14.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Image(
-                            bitmap = screenshotExitState.previewBitmap.asImageBitmap(),
-                            contentDescription = "وێنەی هەڵبژێردراو",
+                    items(quickPrompts) { prompt ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = ObsidianSurfaceVariant,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .height(140.dp)
-                                .clip(RoundedCornerShape(10.dp)),
-                            contentScale = ContentScale.Crop
-                        )
-                        CircularProgressIndicator(color = OkxNeonLime, modifier = Modifier.size(30.dp))
-                        Text(
-                            text = screenshotExitState.stageKu,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = OkxNeonLime,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                is ScreenshotExitUiState.Error -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(BearishRedDim)
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = screenshotExitState.message,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = BearishRed
-                        )
-                    }
-                }
-
-                is ScreenshotExitUiState.Success -> {
-                    val plan = screenshotExitState.plan
-
-                    // Image Thumbnail + Detected Coin & Buy vs Live OKX Price
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(ObsidianSurfaceVariant)
-                            .padding(10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Image(
-                            bitmap = screenshotExitState.previewBitmap.asImageBitmap(),
-                            contentDescription = "وێنەی کڕین",
-                            modifier = Modifier
-                                .size(76.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .border(1.dp, ObsidianCardBorder, RoundedCornerShape(10.dp)),
-                            contentScale = ContentScale.Crop
-                        )
-
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                .border(1.dp, ObsidianCardBorder, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    onAskAdvisor(prompt, attachedImageUris)
+                                    attachedImageUris = emptyList()
+                                }
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "${plan.detectedInstId} • ${plan.positionTypeKu}",
-                                    fontFamily = MonoNumberFontFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = AiCyan,
-                                    modifier = Modifier.clickable { onInspectCoin(plan.detectedInstId) }
-                                )
-                                Text(
-                                    text = "دڵنیایی: ${plan.confidencePercent}%",
-                                    fontFamily = MonoNumberFontFamily,
-                                    fontSize = 11.sp,
-                                    color = OkxNeonLime
-                                )
-                            }
                             Text(
-                                text = "نرخی کڕینت: $${QuantMathEngine.formatCryptoPrice(plan.detectedBuyPrice)} | نرخی ئێستای OKX: $${QuantMathEngine.formatCryptoPrice(plan.currentLiveOkxPrice)}",
-                                fontFamily = MonoNumberFontFamily,
-                                fontSize = 11.sp,
-                                color = TextPrimary
-                            )
-                            Text(
-                                text = plan.currentStatusSummaryKu,
+                                text = prompt,
                                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                                color = if (plan.currentPnlPercent >= 0) BullishGreen else WarningAmber
+                                color = AiCyan,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                             )
                         }
                     }
+                }
 
-                    // GOLDEN EXIT PRICE BANNER ("لەم نرخە بیفرۆشە قازانجتە!")
+                // Unlimited Image Attachment Gallery Strip & Action Bar
+                if (attachedImageUris.isNotEmpty()) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(BullishGreenDim)
-                            .border(1.5.dp, BullishGreen, RoundedCornerShape(14.dp))
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = "بڕیاری زیرەکی دەستکرد — لەم نرخە بیفرۆشە قازانجتە:",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = OkxNeonLime
-                        )
-                        Text(
-                            text = plan.urgentActionVerdictKu,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = TextPrimary
-                        )
-
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Text(
-                                    text = "باشترین نرخی فرۆشتن (Golden Exit Price)",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                                    color = TextSecondary
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Collections,
+                                    contentDescription = null,
+                                    tint = BullishGreen,
+                                    modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = "$${QuantMathEngine.formatCryptoPrice(plan.goldenExitPrice)}",
-                                    fontFamily = MonoNumberFontFamily,
+                                    text = "$attachedCount وێنە ئامادەیە بۆ شیکردنەوە (بێسنوور)",
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 22.sp,
                                     color = BullishGreen
                                 )
                             }
 
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    text = "قازانجی چاوەڕوانکراو",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                                    color = TextSecondary
-                                )
-                                Text(
-                                    text = "${QuantMathEngine.formatSignedPercent(plan.goldenExitProfitPercent)} (+$${String.format(Locale.US, "%.2f", plan.goldenExitEstimatedProfitUsdt)})",
-                                    fontFamily = MonoNumberFontFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = OkxNeonLime
-                                )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = OkxLimeDim,
+                                    modifier = Modifier
+                                        .border(1.dp, OkxNeonLime, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            unlimitedPhotosLauncher.launch(
+                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                            )
+                                        }
+                                        .testTag("btn_add_more_unlimited_images")
+                                ) {
+                                    Text(
+                                        text = "+ زیادکردنی وێنەی تر",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = OkxNeonLime,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = BearishRedDim,
+                                    modifier = Modifier
+                                        .border(1.dp, BearishRed.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                                        .clickable { attachedImageUris = emptyList() }
+                                        .testTag("btn_clear_all_attached_images")
+                                ) {
+                                    Text(
+                                        text = "سڕینەوەی هەمووی",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = BearishRed,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
                         }
 
-                        Button(
-                            onClick = {
-                                onSetPriceAlert(
-                                    plan.detectedInstId,
-                                    plan.goldenExitPrice,
-                                    "ئاگاداری فرۆشتنی زێڕین (Golden Exit) بۆ قازانج"
-                                )
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = BullishGreen,
-                                contentColor = Color.Black
-                            )
+                        // Horizontal Scrollable Thumbnail Strip of All Attached Images
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.NotificationsActive, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "ئاگادارم بکەرەوە هەر کاتێک گەیشتە $${QuantMathEngine.formatCryptoPrice(plan.goldenExitPrice)}",
-                                fontWeight = FontWeight.Bold
-                            )
+                            itemsIndexed(attachedImageUris) { idx, uri ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = 88.dp, height = 74.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .border(1.dp, BullishGreen, RoundedCornerShape(10.dp))
+                                        .background(ObsidianSurfaceVariant)
+                                ) {
+                                    UriThumbnailPreview(
+                                        uri = uri,
+                                        index = idx
+                                    )
+
+                                    // Index Badge (#1, #2, #3...)
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(4.dp)
+                                            .clip(RoundedCornerShape(5.dp))
+                                            .background(Color.Black.copy(alpha = 0.78f))
+                                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                                    ) {
+                                        Text(
+                                            text = "#${idx + 1}",
+                                            fontFamily = MonoNumberFontFamily,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = OkxNeonLime
+                                        )
+                                    }
+
+                                    // Remove Single Image Button
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(4.dp)
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Black.copy(alpha = 0.82f))
+                                            .border(1.dp, BearishRed, CircleShape)
+                                            .clickable {
+                                                attachedImageUris = attachedImageUris.filterIndexed { i, _ -> i != idx }
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "لابردنی وێنەی #${idx + 1}",
+                                            tint = BearishRed,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-
-                    // 3-Stage Profit-Taking Ladder Table (TP1, TP2, TP3 + Emergency SL)
-                    Column(
+                } else {
+                    // Unlimited Photo Picker Button when no images are attached yet
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = ObsidianSurfaceVariant,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(ObsidianSurfaceVariant)
-                            .border(1.dp, ObsidianCardBorder, RoundedCornerShape(12.dp))
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .border(1.dp, OkxNeonLime.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                            .clickable {
+                                unlimitedPhotosLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                            .testTag("btn_attach_unlimited_images")
                     ) {
-                        Text(
-                            text = "خشتەی فرۆشتنی قۆناغبەندی بۆ زۆرترین قازانج:",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = AiCyan
-                        )
-
-                        StagedSellTargetRow(
-                            stageLabel = "ئامانجی فرۆشتنی ١ (مسۆگەرکردن)",
-                            allocationLabel = "${plan.sellTarget1AllocationPercent}% بفرۆشە",
-                            price = plan.sellTarget1Price,
-                            profitPct = plan.sellTarget1ProfitPercent,
-                            color = BullishGreen,
-                            onAlert = {
-                                onSetPriceAlert(plan.detectedInstId, plan.sellTarget1Price, "فرۆشتنی بەشی یەکەم (TP1)")
-                            }
-                        )
-                        HorizontalDivider(color = ObsidianCardBorder)
-
-                        StagedSellTargetRow(
-                            stageLabel = "ئامانجی فرۆشتنی ٢ (سەرەکی)",
-                            allocationLabel = "${plan.sellTarget2AllocationPercent}% بفرۆشە",
-                            price = plan.sellTarget2Price,
-                            profitPct = plan.sellTarget2ProfitPercent,
-                            color = OkxNeonLime,
-                            onAlert = {
-                                onSetPriceAlert(plan.detectedInstId, plan.sellTarget2Price, "فرۆشتنی بەشی دووەم (TP2)")
-                            }
-                        )
-                        HorizontalDivider(color = ObsidianCardBorder)
-
-                        StagedSellTargetRow(
-                            stageLabel = "ئامانجی فرۆشتنی ٣ (لووتکە)",
-                            allocationLabel = "${plan.sellTarget3AllocationPercent}% بفرۆشە",
-                            price = plan.sellTarget3Price,
-                            profitPct = plan.sellTarget3ProfitPercent,
-                            color = AiCyan,
-                            onAlert = {
-                                onSetPriceAlert(plan.detectedInstId, plan.sellTarget3Price, "فرۆشتنی بەشی سێیەم (TP3)")
-                            }
-                        )
-                        HorizontalDivider(color = ObsidianCardBorder)
-
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Text(
-                                    text = "نرخی فرۆشتنی پاراستن (Stop-Loss)",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = BearishRed,
-                                    fontWeight = FontWeight.Bold
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AddPhotoAlternate,
+                                    contentDescription = null,
+                                    tint = OkxNeonLime,
+                                    modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = "ماوەی چاوەڕوانکراو: ${plan.holdDurationEstimateKu}",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
-                                    color = TextSecondary
+                                    text = "+ دانانی وێنە (بێسنوور — چەند وێنەت دەوێت بەیەکەوە هەڵبژێرە)",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = OkxNeonLime
                                 )
                             }
                             Text(
-                                text = "$${QuantMathEngine.formatCryptoPrice(plan.emergencyStopLossPrice)}",
-                                fontFamily = MonoNumberFontFamily,
+                                text = "♾️ بێسنوور",
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = BearishRed
+                                color = AiCyan
                             )
                         }
                     }
+                }
 
-                    // Whale Resistance Note + Step-by-Step Sell Strategy
-                    Column(
+                // Text Input & Send Button Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = questionInput,
+                        onValueChange = { questionInput = it },
+                        placeholder = {
+                            Text(
+                                text = if (attachedCount > 0) {
+                                    "$attachedCount وێنە ئامادەیە — کرتە لە ناردن بکە تا هەموویان شیبکاتەوە..."
+                                } else {
+                                    "ناوی هەر دراوێک بنووسە یان بێسنوور وێنەی کڕینەکانت بنێرە..."
+                                },
+                                fontSize = 12.sp
+                            )
+                        },
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(ObsidianSurfaceVariant)
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        if (plan.whaleResistanceWallNoteKu.isNotBlank()) {
-                            Text(
-                                text = "دیوارەکانی فرۆشتنی نەهەنگەکان لە OKX:",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = WarningAmber
-                            )
-                            Text(
-                                text = plan.whaleResistanceWallNoteKu,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextPrimary
-                            )
-                        }
-                        if (plan.detailedSellStrategyKu.isNotBlank()) {
-                            Text(
-                                text = "پلانی وردی جێبەجێکردن لەناو ئەپی OKX:",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = OkxNeonLime
-                            )
-                            Text(
-                                text = plan.detailedSellStrategyKu,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = TextPrimary
-                            )
-                        }
-                    }
+                            .weight(1f)
+                            .testTag("input_advisor_question"),
+                        maxLines = 3,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = OkxNeonLime,
+                            unfocusedBorderColor = ObsidianCardBorder
+                        )
+                    )
 
                     Button(
-                        onClick = { onSavePlanAsSignal(plan) },
-                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            val urisToSend = attachedImageUris
+                            onAskAdvisor(questionInput, urisToSend)
+                            questionInput = ""
+                            attachedImageUris = emptyList()
+                        },
+                        enabled = advisorState !is AiAdvisorUiState.Loading &&
+                            (questionInput.isNotBlank() || attachedCount > 0),
+                        modifier = Modifier
+                            .height(52.dp)
+                            .testTag("btn_send_advisor_question"),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = AiCyan,
+                            containerColor = OkxNeonLime,
                             contentColor = Color.Black
                         )
                     ) {
-                        Icon(Icons.Default.BookmarkAdd, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "پاشەکەوتکردنی ئەم پلانەی فرۆشتن بۆ چاودێریکردنی زیندوو",
-                            fontWeight = FontWeight.Bold
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "ناردن"
                         )
                     }
                 }
@@ -991,78 +611,117 @@ private fun ScreenshotProfitExitCard(
 }
 
 @Composable
-private fun StagedSellTargetRow(
-    stageLabel: String,
-    allocationLabel: String,
-    price: Double,
-    profitPct: Double,
-    color: Color,
-    onAlert: () -> Unit
+private fun ChatMessageBubble(
+    msg: AdvisorChatMessage,
+    onWatchCoinTargets: (String, Double, Double, Double, Double) -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (msg.isUser) AiCyanDim else ObsidianSurface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                1.dp,
+                if (msg.isUser) AiCyan.copy(alpha = 0.55f) else OkxNeonLime.copy(alpha = 0.45f),
+                RoundedCornerShape(16.dp)
+            )
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = stageLabel,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextPrimary,
-                fontWeight = FontWeight.Medium
-            )
-            Text(
-                text = "$allocationLabel • قازانج: ${QuantMathEngine.formatSignedPercent(profitPct)}",
-                fontFamily = MonoNumberFontFamily,
-                fontSize = 11.sp,
-                color = color
-            )
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                text = "$${QuantMathEngine.formatCryptoPrice(price)}",
-                fontFamily = MonoNumberFontFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-                color = color
-            )
-            IconButton(
-                onClick = onAlert,
-                modifier = Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(ObsidianSurface)
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.NotificationsActive,
-                    contentDescription = "ئاگادارکەرەوە",
-                    tint = WarningAmber,
-                    modifier = Modifier.size(15.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = if (msg.isUser) AiCyan else OkxNeonLime,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = if (msg.isUser) {
+                            "تۆ"
+                        } else {
+                            "ڕاوێژکاری دراوی abdulbasit traiding" + (msg.detectedCoin?.let { " • $it" } ?: "")
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (msg.isUser) AiCyan else OkxNeonLime,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                if (msg.attachedImageCount > 0) {
+                    Text(
+                        text = "🖼️ ${msg.attachedImageCount} وێنە",
+                        fontSize = 11.sp,
+                        color = OkxNeonLime,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Show user's attached images (unlimited horizontal strip) inside the bubble
+            if (msg.previewBitmaps.isNotEmpty()) {
+                PreviewBitmapsRow(msg.previewBitmaps)
+            }
+
+            // If AI message has exact Buy ("لەوەندە بیکڕە") and Sell ("کە گەیشتە ئەوەندە بیفرۆشە") prices, show the highlighted Action Card!
+            if (!msg.isUser && msg.detectedCoin != null && (msg.buyAtPrice > 0.0 || msg.sellAtPrice > 0.0)) {
+                BuyAndSellVerdictBox(
+                    coin = msg.detectedCoin,
+                    livePrice = msg.livePriceAtAnalysis,
+                    buyAtPrice = msg.buyAtPrice,
+                    sellTp1Price = msg.sellTp1Price,
+                    sellGoldenPrice = msg.sellAtPrice,
+                    sellTp3Price = msg.sellTp3Price,
+                    stopLossPrice = msg.stopLossPrice,
+                    onActivateBackgroundAlert = {
+                        onWatchCoinTargets(
+                            msg.detectedCoin,
+                            msg.buyAtPrice,
+                            msg.sellAtPrice,
+                            msg.stopLossPrice,
+                            msg.livePriceAtAnalysis
+                        )
+                    }
                 )
             }
+
+            // Message Text
+            Text(
+                text = msg.text,
+                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                color = TextPrimary
+            )
         }
     }
 }
 
 @Composable
-private fun AiOpportunityRowCard(
-    opportunity: AiMarketOpportunityItem,
-    onClick: () -> Unit
+private fun BuyAndSellVerdictBox(
+    coin: String,
+    livePrice: Double,
+    buyAtPrice: Double,
+    sellTp1Price: Double,
+    sellGoldenPrice: Double,
+    sellTp3Price: Double,
+    stopLossPrice: Double,
+    onActivateBackgroundAlert: () -> Unit
 ) {
-    val isLong = opportunity.actionDirection.uppercase(Locale.US) == "LONG"
-    val accent = if (isLong) BullishGreen else BearishRed
-    val bg = if (isLong) BullishGreenDim else BearishRedDim
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(ObsidianSurfaceVariant)
-            .border(1.dp, accent.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
+            .border(1.5.dp, BullishGreen.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -1071,82 +730,213 @@ private fun AiOpportunityRowCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Text(
+                text = "📌 خولاصەی بڕیاری کڕین و فرۆشتنی $coin",
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.sp),
+                color = OkxNeonLime,
+                fontWeight = FontWeight.Bold
+            )
+            if (livePrice > 0.0) {
                 Text(
-                    text = opportunity.instId,
+                    text = "نرخی ئێستا: $${QuantMathEngine.formatCryptoPrice(livePrice)}",
                     fontFamily = MonoNumberFontFamily,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    color = TextPrimary
+                    fontSize = 12.sp,
+                    color = AiCyan
                 )
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(bg)
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
+            }
+        }
+
+        // 1. SELL VERDICT ("کە گەیشتە ئەوەندە بیفرۆشە قازانجتە")
+        if (sellGoldenPrice > 0.0) {
+            val profitPct = if (livePrice > 0.0) ((sellGoldenPrice - livePrice) / livePrice) * 100.0 else 0.0
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = BullishGreenDim,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, BullishGreen, RoundedCornerShape(10.dp))
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = opportunity.actionLabelKu,
-                        style = MaterialTheme.typography.labelLarge.copy(fontSize = 11.sp),
-                        color = accent
+                        text = "🎯 ئەگەر کڕیوتە: کە گەیشتە $${QuantMathEngine.formatCryptoPrice(sellGoldenPrice)} بیفرۆشە قازانجتە! (${QuantMathEngine.formatSignedPercent(profitPct)})",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                        color = BullishGreen,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        if (sellTp1Price > 0.0) {
+                            Text(
+                                text = "ئامانجی ١ (TP1): $${QuantMathEngine.formatCryptoPrice(sellTp1Price)}",
+                                fontFamily = MonoNumberFontFamily,
+                                fontSize = 11.sp,
+                                color = TextPrimary
+                            )
+                        }
+                        if (sellTp3Price > 0.0) {
+                            Text(
+                                text = "ئامانجی باڵا (TP3): $${QuantMathEngine.formatCryptoPrice(sellTp3Price)}",
+                                fontFamily = MonoNumberFontFamily,
+                                fontSize = 11.sp,
+                                color = OkxNeonLime
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. BUY VERDICT ("لەوەندە بیکڕە")
+        if (buyAtPrice > 0.0) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = OkxLimeDim,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, OkxNeonLime.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "🟢 ئەگەر دەتەوێت بیکڕیت: لە نرخی $${QuantMathEngine.formatCryptoPrice(buyAtPrice)} بیکڕە",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                        color = OkxNeonLime,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
-
-            Text(
-                text = "دڵنیایی AI: ${opportunity.confidencePercent}%",
-                fontFamily = MonoNumberFontFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp,
-                color = OkxNeonLime
-            )
         }
 
+        // 3. Stop Loss + Background Auto-Monitor Row
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            OpportunityNumberBox("چوونەژوورەوە", QuantMathEngine.formatCryptoPrice(opportunity.entryPrice), AiCyan)
-            OpportunityNumberBox("ئامانج (Target)", QuantMathEngine.formatCryptoPrice(opportunity.targetPrice), BullishGreen)
-            OpportunityNumberBox("ستۆپ لۆس (SL)", QuantMathEngine.formatCryptoPrice(opportunity.stopLossPrice), BearishRed)
-            OpportunityNumberBox(
-                "جووڵەی چاوەڕوانکراو",
-                QuantMathEngine.formatSignedPercent(opportunity.expectedMovePercent),
-                accent
-            )
+            if (stopLossPrice > 0.0) {
+                Text(
+                    text = "🛡️ ستۆپ لۆس: $${QuantMathEngine.formatCryptoPrice(stopLossPrice)}",
+                    fontFamily = MonoNumberFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    color = BearishRed
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = AiCyanDim,
+                modifier = Modifier
+                    .border(1.dp, AiCyan, RoundedCornerShape(8.dp))
+                    .clickable(onClick = onActivateBackgroundAlert)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(BullishGreen)
+                    )
+                    Text(
+                        text = "🔔 لە باگراوند چاودێری دەکرێت بۆ نۆتیفیکەیشن",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AiCyan
+                    )
+                }
+            }
         }
-
-        HorizontalDivider(color = ObsidianCardBorder)
-
-        Text(
-            text = opportunity.keyReasonKu,
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextPrimary
-        )
     }
 }
 
 @Composable
-private fun OpportunityNumberBox(
-    label: String,
-    value: String,
-    color: Color
-) {
-    Column {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 10.sp),
-            color = TextSecondary
-        )
-        Text(
-            text = value,
-            fontFamily = MonoNumberFontFamily,
-            fontWeight = FontWeight.Bold,
-            fontSize = 12.sp,
-            color = color
-        )
+private fun PreviewBitmapsRow(bitmaps: List<Bitmap>) {
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        itemsIndexed(bitmaps) { idx, bmp ->
+            Box(
+                modifier = Modifier
+                    .width(if (bitmaps.size == 1) 240.dp else 150.dp)
+                    .height(125.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .border(1.dp, ObsidianCardBorder, RoundedCornerShape(10.dp))
+            ) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "وێنەی ${idx + 1}",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black.copy(alpha = 0.78f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "وێنەی #${idx + 1}",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = OkxNeonLime
+                    )
+                }
+            }
+        }
     }
 }
+
+@Composable
+private fun UriThumbnailPreview(uri: Uri, index: Int) {
+    val context = LocalContext.current
+    val thumbBitmap by produceState<Bitmap?>(initialValue = null, uri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream)
+                }
+            }.getOrNull()
+        }
+    }
+
+    val bmp = thumbBitmap
+    if (bmp != null) {
+        Image(
+            bitmap = bmp.asImageBitmap(),
+            contentDescription = "وێنەی #${index + 1}",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+    } else {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.AddPhotoAlternate,
+                contentDescription = null,
+                tint = OkxNeonLime,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+}
+

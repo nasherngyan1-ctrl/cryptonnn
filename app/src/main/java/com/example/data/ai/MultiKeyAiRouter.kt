@@ -14,7 +14,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -86,22 +85,21 @@ class MultiKeyAiRouter(
     private val roundRobinCursor = AtomicInteger(0)
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(35, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     /**
      * Automatically rotates through all enabled user API keys in Round-Robin order.
-     * If a key hits quota (429), auth error (401/403), or server error, it marks that key
-     * with a cooldown and immediately fails over to the next available key!
+     * Supports 0, 1, or 2+ images (bitmaps) simultaneously for dual-screenshot trading analysis!
      */
     suspend fun generateWithAutoRotation(
         prompt: String,
         expectJson: Boolean,
-        bitmap: Bitmap? = null,
+        bitmaps: List<Bitmap> = emptyList(),
         onKeySwitchCallback: ((String) -> Unit)? = null
     ): KeyRotationExecutionResult? = withContext(Dispatchers.IO) {
         val enabledKeys = dao.getEnabledApiKeys()
@@ -111,7 +109,6 @@ class MultiKeyAiRouter(
         val totalKeys = enabledKeys.size
         val startIndex = roundRobinCursor.getAndIncrement().mod(totalKeys)
 
-        // Order keys starting from Round-Robin cursor, prioritizing keys not on cooldown
         val orderedIndices = (0 until totalKeys).map { (startIndex + it) % totalKeys }
         val readyKeys = orderedIndices.map { enabledKeys[it] }.filter { it.cooldownUntilMs <= now }
         val cooldownKeys = orderedIndices.map { enabledKeys[it] }.filter { it.cooldownUntilMs > now }
@@ -127,7 +124,7 @@ class MultiKeyAiRouter(
                     keyEntity = keyEntity,
                     prompt = prompt,
                     expectJson = expectJson,
-                    bitmap = bitmap
+                    bitmaps = bitmaps
                 )
                 val cleanedOutput = if (expectJson) extractCleanJson(rawOutput) else rawOutput
                 if (cleanedOutput.isNotBlank()) {
@@ -149,7 +146,7 @@ class MultiKeyAiRouter(
                 rotations++
                 Log.w(TAG, "Key '${keyEntity.labelKu}' (${keyEntity.providerType}) failed, rotating to next key: ${e.message}")
                 val cooldownMs = if (e.message?.contains("429") == true || e.message?.contains("quota", ignoreCase = true) == true) {
-                    60_000L // 60s cooldown on rate limit
+                    60_000L
                 } else {
                     20_000L
                 }
@@ -173,7 +170,7 @@ class MultiKeyAiRouter(
                 keyEntity = keyEntity,
                 prompt = "Respond with only the word OK",
                 expectJson = false,
-                bitmap = null
+                bitmaps = emptyList()
             )
             val latencyMs = System.currentTimeMillis() - startMs
             if (reply.isNotBlank()) {
@@ -203,7 +200,7 @@ class MultiKeyAiRouter(
         keyEntity: ApiKeyEntity,
         prompt: String,
         expectJson: Boolean,
-        bitmap: Bitmap?
+        bitmaps: List<Bitmap>
     ): String {
         val provider = ApiProviderType.fromId(keyEntity.providerType)
         return when (provider) {
@@ -212,16 +209,16 @@ class MultiKeyAiRouter(
                 preferredModel = keyEntity.modelName.ifBlank { "gemini-2.5-flash" },
                 prompt = prompt,
                 expectJson = expectJson,
-                bitmap = bitmap
+                bitmaps = bitmaps
             )
             ApiProviderType.GROQ -> callOpenAiCompatibleRest(
                 endpointUrl = "https://api.groq.com/openai/v1/chat/completions",
                 apiKey = keyEntity.apiKey.trim(),
-                model = if (bitmap != null) "meta-llama/llama-4-scout-17b-16e-instruct"
+                model = if (bitmaps.isNotEmpty()) "meta-llama/llama-4-scout-17b-16e-instruct"
                 else keyEntity.modelName.ifBlank { "llama-3.3-70b-versatile" },
                 prompt = prompt,
                 expectJson = expectJson,
-                bitmap = bitmap
+                bitmaps = bitmaps
             )
             ApiProviderType.OPENROUTER -> callOpenAiCompatibleRest(
                 endpointUrl = "https://openrouter.ai/api/v1/chat/completions",
@@ -229,7 +226,7 @@ class MultiKeyAiRouter(
                 model = keyEntity.modelName.ifBlank { "google/gemini-2.5-flash" },
                 prompt = prompt,
                 expectJson = expectJson,
-                bitmap = bitmap
+                bitmaps = bitmaps
             )
             ApiProviderType.OPENAI -> callOpenAiCompatibleRest(
                 endpointUrl = "https://api.openai.com/v1/chat/completions",
@@ -237,7 +234,7 @@ class MultiKeyAiRouter(
                 model = keyEntity.modelName.ifBlank { "gpt-4o-mini" },
                 prompt = prompt,
                 expectJson = expectJson,
-                bitmap = bitmap
+                bitmaps = bitmaps
             )
             ApiProviderType.DEEPSEEK -> callOpenAiCompatibleRest(
                 endpointUrl = "https://api.deepseek.com/chat/completions",
@@ -245,7 +242,7 @@ class MultiKeyAiRouter(
                 model = keyEntity.modelName.ifBlank { "deepseek-chat" },
                 prompt = prompt,
                 expectJson = expectJson,
-                bitmap = null // DeepSeek chat endpoint is text-first
+                bitmaps = emptyList()
             )
         }
     }
@@ -255,9 +252,8 @@ class MultiKeyAiRouter(
         preferredModel: String,
         prompt: String,
         expectJson: Boolean,
-        bitmap: Bitmap?
+        bitmaps: List<Bitmap>
     ): String {
-        // Automatic model fallback chain inside the same Gemini key if one model is unavailable/rate-limited
         val candidateModels = listOf(
             preferredModel,
             "gemini-2.5-flash",
@@ -270,8 +266,8 @@ class MultiKeyAiRouter(
             try {
                 val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
                 val partsArray = JSONArray()
-                if (bitmap != null) {
-                    val base64Jpeg = encodeBitmapToBase64Jpeg(bitmap)
+                bitmaps.forEach { bmp ->
+                    val base64Jpeg = encodeBitmapToBase64Jpeg(bmp)
                     val inlineDataObj = JSONObject().apply {
                         put("mime_type", "image/jpeg")
                         put("data", base64Jpeg)
@@ -317,7 +313,6 @@ class MultiKeyAiRouter(
                 }
             } catch (e: Exception) {
                 lastError = e
-                // If invalid API key (400/401/403 API_KEY_INVALID), don't waste time trying other models on same key
                 if (e.message?.contains("API_KEY_INVALID") == true || e.message?.contains("HTTP 401") == true) {
                     throw e
                 }
@@ -332,26 +327,28 @@ class MultiKeyAiRouter(
         model: String,
         prompt: String,
         expectJson: Boolean,
-        bitmap: Bitmap?
+        bitmaps: List<Bitmap>
     ): String {
         val messagesArray = JSONArray()
         val finalPrompt = if (expectJson) {
             "$prompt\n\nIMPORTANT: Respond with ONLY a valid JSON object matching the requested fields. Do not include markdown fences."
         } else prompt
 
-        if (bitmap != null) {
-            val base64Jpeg = encodeBitmapToBase64Jpeg(bitmap)
+        if (bitmaps.isNotEmpty()) {
             val contentArr = JSONArray().apply {
                 put(JSONObject().apply {
                     put("type", "text")
                     put("text", finalPrompt)
                 })
-                put(JSONObject().apply {
-                    put("type", "image_url")
-                    put("image_url", JSONObject().apply {
-                        put("url", "data:image/jpeg;base64,$base64Jpeg")
+                bitmaps.forEach { bmp ->
+                    val base64Jpeg = encodeBitmapToBase64Jpeg(bmp)
+                    put(JSONObject().apply {
+                        put("type", "image_url")
+                        put("image_url", JSONObject().apply {
+                            put("url", "data:image/jpeg;base64,$base64Jpeg")
+                        })
                     })
-                })
+                }
             }
             messagesArray.put(JSONObject().apply {
                 put("role", "user")
@@ -368,7 +365,7 @@ class MultiKeyAiRouter(
             put("model", model)
             put("messages", messagesArray)
             put("temperature", 0.25)
-            if (expectJson && bitmap == null) {
+            if (expectJson && bitmaps.isEmpty()) {
                 put("response_format", JSONObject().apply { put("type", "json_object") })
             }
         }

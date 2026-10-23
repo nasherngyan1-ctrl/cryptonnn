@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "OKX Kurd AI"
+rootProject.name = "abdulbasit traiding"
 
 include(":app")

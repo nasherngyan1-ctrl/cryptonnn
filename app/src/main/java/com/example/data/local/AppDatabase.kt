@@ -90,6 +90,9 @@ interface OkxTradingDao {
     @Query("SELECT * FROM price_alerts ORDER BY createdAtMs DESC")
     fun observePriceAlerts(): Flow<List<PriceAlertEntity>>
 
+    @Query("SELECT * FROM price_alerts WHERE isTriggered = 0")
+    suspend fun getUntriggeredAlertsSnapshot(): List<PriceAlertEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPriceAlert(alert: PriceAlertEntity)
 

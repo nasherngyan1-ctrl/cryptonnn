@@ -1,6 +1,6 @@
 {
-  "name": "OKX Kurd AI",
-  "description": "سیستەمی زیرەکی دەستکرد (Gemini AI) و داتای زۆر وردی چرکەبەچرکەی نرخی دراوەکان و پێشبینی بازاڕی ترەیدینگی OKX بە زمانی کوردی",
+  "name": "abdulbasit traiding",
+  "description": "ڕاوێژکاری زیرەکی دەستکردی ترەیدینگ (abdulbasit traiding) بە شیکردنەوەی جووت-وێنە، هەڵبژاردنی هەموو دراوەکان، چاتی ڕاستەوخۆ و کارکردن لە باگراونددا",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

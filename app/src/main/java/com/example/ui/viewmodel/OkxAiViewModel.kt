@@ -11,89 +11,54 @@ import com.example.data.ai.ApiProviderType
 import com.example.data.ai.OkxGeminiAiService
 import com.example.data.local.ApiKeyEntity
 import com.example.data.local.AppDatabase
-import com.example.data.local.PriceAlertEntity
-import com.example.data.local.SavedAiSignalEntity
-import com.example.data.model.AiMarketOpportunityItem
-import com.example.data.model.AiScreenshotExitPlan
-import com.example.data.model.AiTradingPrediction
-import com.example.data.model.OkxInstrumentDeepTelemetry
 import com.example.data.model.OkxMarketTicker
 import com.example.data.remote.OkxApiService
 import com.example.data.repository.OkxRepository
+import com.example.domain.QuantMathEngine
+import com.example.service.TradingBackgroundService
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.util.Locale
 import kotlin.math.max
 
 private const val TAG = "OkxAiViewModel"
 
-enum class MarketFilterCategory(val labelKu: String) {
-    ALL("هەمووی"),
-    WATCHLIST("دڵخوازەکان"),
-    TOP_VOLUME("زۆرترین قەبارە"),
-    TOP_GAINERS("بەرزترین گەشە"),
-    TOP_LOSERS("زۆرترین دابەزین"),
-    HIGH_VOLATILITY("زۆرترین ناجێگیری")
-}
-
-sealed interface AiPredictionUiState {
-    data object Idle : AiPredictionUiState
-    data object Loading : AiPredictionUiState
-    data class Success(val prediction: AiTradingPrediction) : AiPredictionUiState
-    data class Error(val message: String) : AiPredictionUiState
-}
-
-sealed interface AiScannerUiState {
-    data object Idle : AiScannerUiState
-    data object Scanning : AiScannerUiState
-    data class Success(
-        val marketRegimeKu: String,
-        val opportunities: List<AiMarketOpportunityItem>
-    ) : AiScannerUiState
-    data class Error(val message: String) : AiScannerUiState
-}
-
-sealed interface ScreenshotExitUiState {
-    data object Idle : ScreenshotExitUiState
-    data class Analyzing(
-        val stageKu: String,
-        val previewBitmap: Bitmap
-    ) : ScreenshotExitUiState
-    data class Success(
-        val previewBitmap: Bitmap,
-        val plan: AiScreenshotExitPlan
-    ) : ScreenshotExitUiState
-    data class Error(
-        val message: String,
-        val previewBitmap: Bitmap? = null
-    ) : ScreenshotExitUiState
-}
-
 sealed interface AiAdvisorUiState {
     data object Idle : AiAdvisorUiState
-    data object Loading : AiAdvisorUiState
+    data class Loading(val stageKu: String) : AiAdvisorUiState
     data class Streaming(val partialText: String) : AiAdvisorUiState
     data class Success(val fullText: String) : AiAdvisorUiState
     data class Error(val message: String) : AiAdvisorUiState
 }
 
 data class AdvisorChatMessage(
-    val id: Long = System.currentTimeMillis(),
+    val id: Long = System.currentTimeMillis() + (0..999).random(),
     val isUser: Boolean,
     val text: String,
-    val relatedInstId: String? = null,
-    val hasAttachedImage: Boolean = false
+    val detectedCoin: String? = null,
+    val livePriceAtAnalysis: Double = 0.0,
+    val buyAtPrice: Double = 0.0,
+    val sellAtPrice: Double = 0.0,
+    val sellTp1Price: Double = 0.0,
+    val sellTp3Price: Double = 0.0,
+    val stopLossPrice: Double = 0.0,
+    val isTrackedInBackground: Boolean = false,
+    val attachedImageCount: Int = 0,
+    val previewBitmaps: List<Bitmap> = emptyList()
 )
 
 class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
@@ -106,103 +71,48 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
     )
     private val aiService = OkxGeminiAiService(dao = dao)
 
-    // Navigation Tab: 0 = Market Matrix, 1 = AI Deep Intelligence & Data, 2 = AI Screenshot & Advisor, 3 = Signals, Calc & API Keys
-    private val _selectedTab = MutableStateFlow(0)
-    val selectedTab: StateFlow<Int> = _selectedTab.asStateFlow()
+    // Application-scoped background coroutine so AI chat & image analysis finish even if app is minimized
+    private val backgroundAiScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Quick API Key Manager Modal toggle (accessible from top bar on any screen)
+    // API Key Manager Modal toggle
     private val _isApiKeyModalOpen = MutableStateFlow(false)
     val isApiKeyModalOpen: StateFlow<Boolean> = _isApiKeyModalOpen.asStateFlow()
 
     // Active AI Engine / Rotated Key Badge
-    private val _activeAiEngineBadge = MutableStateFlow("سیستەمی ئۆتۆماتیکی AI + کلیلەکان")
+    private val _activeAiEngineBadge = MutableStateFlow("چاتی گشتی دراوەکان + چاودێری باگراوند")
     val activeAiEngineBadge: StateFlow<String> = _activeAiEngineBadge.asStateFlow()
 
     private val _testingKeyId = MutableStateFlow<Int?>(null)
     val testingKeyId: StateFlow<Int?> = _testingKeyId.asStateFlow()
 
-    // Market Instrument Type: "SPOT" or "SWAP"
-    private val _selectedInstType = MutableStateFlow("SPOT")
-    val selectedInstType: StateFlow<String> = _selectedInstType.asStateFlow()
+    // Background Service Status & Watched Coins Count
+    val isBackgroundServiceRunning: StateFlow<Boolean> = TradingBackgroundService.isServiceRunning
+    val watchedCoinsCount: StateFlow<Int> = TradingBackgroundService.watchedCoinsCount
 
-    // Live OKX Tickers
+    // Live OKX Tickers in memory for automatic coin detection & market context
     private val _tickers = MutableStateFlow<List<OkxMarketTicker>>(emptyList())
     val tickers: StateFlow<List<OkxMarketTicker>> = _tickers.asStateFlow()
 
-    private val _isMarketLoading = MutableStateFlow(false)
-    val isMarketLoading: StateFlow<Boolean> = _isMarketLoading.asStateFlow()
-
-    private val _marketError = MutableStateFlow<String?>(null)
-    val marketError: StateFlow<String?> = _marketError.asStateFlow()
-
-    private val _lastUpdatedMs = MutableStateFlow(0L)
-    val lastUpdatedMs: StateFlow<Long> = _lastUpdatedMs.asStateFlow()
-
-    private val _autoRefreshEnabled = MutableStateFlow(true)
-    val autoRefreshEnabled: StateFlow<Boolean> = _autoRefreshEnabled.asStateFlow()
-
-    // Search & Filter
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-
-    private val _selectedCategory = MutableStateFlow(MarketFilterCategory.ALL)
-    val selectedCategory: StateFlow<MarketFilterCategory> = _selectedCategory.asStateFlow()
-
-    // Active Selected Instrument for Deep Telemetry & AI Prediction
-    private val _selectedInstId = MutableStateFlow("BTC-USDT")
-    val selectedInstId: StateFlow<String> = _selectedInstId.asStateFlow()
-
-    private val _activeTelemetry = MutableStateFlow<OkxInstrumentDeepTelemetry?>(null)
-    val activeTelemetry: StateFlow<OkxInstrumentDeepTelemetry?> = _activeTelemetry.asStateFlow()
-
-    private val _isTelemetryLoading = MutableStateFlow(false)
-    val isTelemetryLoading: StateFlow<Boolean> = _isTelemetryLoading.asStateFlow()
-
-    private val _telemetryError = MutableStateFlow<String?>(null)
-    val telemetryError: StateFlow<String?> = _telemetryError.asStateFlow()
-
-    // AI Prediction State
-    private val aiPredictionCache = mutableMapOf<String, AiTradingPrediction>()
-    private val _aiPredictionState = MutableStateFlow<AiPredictionUiState>(AiPredictionUiState.Idle)
-    val aiPredictionState: StateFlow<AiPredictionUiState> = _aiPredictionState.asStateFlow()
-
-    // AI Screenshot Exit & Profit Optimizer State
-    private val _screenshotExitState = MutableStateFlow<ScreenshotExitUiState>(ScreenshotExitUiState.Idle)
-    val screenshotExitState: StateFlow<ScreenshotExitUiState> = _screenshotExitState.asStateFlow()
-
-    // AI Market Scanner State
-    private val _aiScannerState = MutableStateFlow<AiScannerUiState>(AiScannerUiState.Idle)
-    val aiScannerState: StateFlow<AiScannerUiState> = _aiScannerState.asStateFlow()
-
-    // AI Advisor Streaming Chat State
+    // AI Advisor Chat State & Messages
     private val _advisorState = MutableStateFlow<AiAdvisorUiState>(AiAdvisorUiState.Idle)
     val advisorState: StateFlow<AiAdvisorUiState> = _advisorState.asStateFlow()
 
-    private val _chatHistory = MutableStateFlow<List<AdvisorChatMessage>>(emptyList())
+    private val _chatHistory = MutableStateFlow<List<AdvisorChatMessage>>(
+        listOf(
+            AdvisorChatMessage(
+                isUser = false,
+                text = "سڵاو لە چاتی زیرەکی «abdulbasit traiding»! 🤖\n\n" +
+                    "• ناوی هەر دراوێک بنووسە (وەک BTC, SOL, PEPE, ETH, TON, XRP, SUI...) یان پرسیار بکە تا پێت بڵێم لە چ نرخێکدا بیکڕیت و لە چ نرخێکدا بیفرۆشیت.\n" +
+                    "• دەتوانیت بێسنوور وێنە (Screenshot) لە هەر جۆرە چارتێک یان کڕینی دراوێک بەیەکەوە دابنێیت و بنێریت؛ هەموویان بەیەکەوە دەخوێنمەوە و پێت دەڵێم: «کە گەیشتە ئەوەندە بیفرۆشە قازانجتە» یان «لەوەندە بیکڕە».\n" +
+                    "• هەر نرخێکی کڕین و فرۆشتنت بۆ دیاری بکەم، لە باگراوند چاودێری دەکەم و کە گەیشتە نرخەکە بە نۆتیفیکەیشن ئاگادارت دەکەمەوە!"
+            )
+        )
+    )
     val chatHistory: StateFlow<List<AdvisorChatMessage>> = _chatHistory.asStateFlow()
 
-    // Status Banner / Toast Message
+    // Status Banner
     private val _statusBannerKu = MutableStateFlow<String?>(null)
     val statusBannerKu: StateFlow<String?> = _statusBannerKu.asStateFlow()
-
-    // Room Flows
-    val watchlistIds: StateFlow<Set<String>> = repository.watchlistIdsFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = setOf("BTC-USDT", "ETH-USDT", "SOL-USDT", "TON-USDT", "XRP-USDT")
-    )
-
-    val savedSignals: StateFlow<List<SavedAiSignalEntity>> = repository.savedSignalsFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
-
-    val priceAlerts: StateFlow<List<PriceAlertEntity>> = repository.priceAlertsFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
 
     val apiKeys: StateFlow<List<ApiKeyEntity>> = dao.observeApiKeys().stateIn(
         scope = viewModelScope,
@@ -211,23 +121,312 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private var tickerLoopJob: Job? = null
-    private var deepInspectJob: Job? = null
 
     init {
-        viewModelScope.launch {
-            val initialWatchlist = repository.watchlistIdsFlow.first()
-            repository.seedDefaultWatchlistIfEmpty(initialWatchlist)
-        }
+        TradingBackgroundService.registerCoinTargetsInBackground(
+            context = getApplication(),
+            instId = "BTC-USDT"
+        )
         startTickerPollingLoop()
-        selectInstrumentAndAnalyze("BTC-USDT", switchToDetailTab = false, autoRunAi = true)
-    }
-
-    fun selectTab(tabIndex: Int) {
-        _selectedTab.value = tabIndex
     }
 
     fun setApiKeyModalOpen(open: Boolean) {
         _isApiKeyModalOpen.value = open
+    }
+
+    fun toggleBackgroundService(enable: Boolean) {
+        val app = getApplication<Application>()
+        if (enable) {
+            TradingBackgroundService.registerCoinTargetsInBackground(
+                context = app,
+                instId = "BTC-USDT"
+            )
+            _statusBannerKu.value = "چاودێری باگراوند و نۆتیفیکەیشنی نرخی دراوەکان چالاک کرا"
+        } else {
+            TradingBackgroundService.stopBackgroundMonitor(app)
+            _statusBannerKu.value = "چاودێری باگراوند ڕاگیرا"
+        }
+    }
+
+    fun clearStatusBanner() {
+        _statusBannerKu.value = null
+    }
+
+    private fun startTickerPollingLoop() {
+        tickerLoopJob?.cancel()
+        tickerLoopJob = backgroundAiScope.launch {
+            while (isActive) {
+                try {
+                    val list = repository.fetchLiveMarketTickers("SPOT")
+                    _tickers.value = list
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Background ticker refresh: ${e.message}")
+                }
+                delay(8_000L)
+            }
+        }
+    }
+
+    /**
+     * Unified General Crypto Chat handler:
+     * - Accepts text + UNLIMITED images (any number of screenshots).
+     * - Automatically detects which coin the user is asking about (from Kurdish/English text or from the screenshots).
+     * - Fetches live 4-timeframe (15m, 1H, 4H, 1D) & 50-level Order Book telemetry from OKX.
+     * - Calculates exact Buy ("لەوەندە بیکڕە") and Sell ("کە گەیشتە ئەوەندە بیفرۆشە") targets.
+     * - Registers those targets in the 24/7 Background Service so the user gets notified when price hits!
+     */
+    fun askAiAdvisor(questionKu: String, attachedImageUris: List<Uri> = emptyList()) {
+        val trimmed = questionKu.trim().ifBlank {
+            when {
+                attachedImageUris.size > 1 ->
+                    "ئەم ${attachedImageUris.size} وێنەیەم بۆ شیبکەرەوە؛ چ دراوێکە و پێم بڵێ کە گەیشتە چەند بیفرۆشم بۆ قازانج یان لە چەند بیکڕم؟"
+                attachedImageUris.size == 1 ->
+                    "ئەم دراوەم کڕیوە (یان ئەم وێنەیەم ناردووە)؛ پێم بڵێ کە گەیشتە چەند بیفرۆشم بۆ زۆرترین قازانج یان لە چەند بیکڕم؟"
+                else -> ""
+            }
+        }
+        if (trimmed.isEmpty()) return
+
+        backgroundAiScope.launch {
+            val totalCount = attachedImageUris.size
+            val bitmaps = attachedImageUris.mapNotNull { decodeAndScaleBitmap(it, totalCount) }
+
+            _chatHistory.value = _chatHistory.value + AdvisorChatMessage(
+                isUser = true,
+                text = trimmed,
+                attachedImageCount = bitmaps.size,
+                previewBitmaps = bitmaps
+            )
+
+            _advisorState.value = AiAdvisorUiState.Loading(
+                stageKu = if (bitmaps.isNotEmpty()) {
+                    "خوێندنەوەی هەر ${bitmaps.size} وێنەکە و ناسینەوەی دراوەکە بە زیرەکی دەستکرد..."
+                } else {
+                    "پشکنینی داتای زیندووی بازاڕی دراوەکان..."
+                }
+            )
+
+            try {
+                // Step 1: Detect the coin from user's text or attached screenshot(s)
+                val coinFromText = extractCoinFromUserText(trimmed, _tickers.value)
+                val detectedInstId = if (bitmaps.isNotEmpty()) {
+                    aiService.detectCoinSymbolFromScreenshots(
+                        bitmaps = bitmaps,
+                        userNoteKu = trimmed,
+                        fallbackInstId = coinFromText ?: "BTC-USDT"
+                    )
+                } else {
+                    coinFromText ?: "BTC-USDT"
+                }
+
+                _advisorState.value = AiAdvisorUiState.Loading(
+                    stageKu = "وەرگرتنی نرخی چرکەبەچرکە و ٤ تایمفرەیم و دیوارەکانی نەهەنگی $detectedInstId..."
+                )
+
+                // Step 2: Fetch deep multi-timeframe & order book telemetry for the detected coin
+                val currentTickers = if (_tickers.value.isNotEmpty()) {
+                    _tickers.value
+                } else {
+                    runCatching { repository.fetchLiveMarketTickers("SPOT") }.getOrDefault(emptyList()).also {
+                        _tickers.value = it
+                    }
+                }
+
+                val telemetry = runCatching {
+                    val fallbackTicker = currentTickers.find { it.instId == detectedInstId }
+                    repository.fetchDeepInstrumentTelemetry(detectedInstId, fallbackTicker)
+                }.getOrNull()
+
+                // Step 3: Compute exact Buy ("لەوەندە بیکڕە") and Sell ("کە گەیشتە ئەوەندە بیفرۆشە") targets
+                var buyTargetPx = 0.0
+                var sellTargetPx = 0.0
+                var sellTp1Px = 0.0
+                var sellTp3Px = 0.0
+                var stopLossPx = 0.0
+                var livePx = telemetry?.ticker?.lastPrice ?: 0.0
+
+                if (telemetry != null) {
+                    if (bitmaps.isNotEmpty()) {
+                        _advisorState.value = AiAdvisorUiState.Loading(
+                            stageKu = "هەژمارکردنی نرخی وردی فرۆشتن و کڕین بۆ $detectedInstId..."
+                        )
+                        val (exitPlan, badge) = aiService.analyzeTradeScreenshotsForExitPlan(
+                            bitmaps = bitmaps,
+                            userNoteKu = trimmed,
+                            telemetry = telemetry
+                        )
+                        _activeAiEngineBadge.value = badge
+                        livePx = exitPlan.currentLiveOkxPrice
+                        val tf1h = telemetry.timeframeMetrics["1H"]
+                        val atr = tf1h?.atr14?.takeIf { it > 0 } ?: (livePx * 0.018)
+                        buyTargetPx = tf1h?.support1?.takeIf { it < livePx } ?: (livePx - atr * 0.45)
+                        sellTargetPx = exitPlan.goldenExitPrice
+                        sellTp1Px = exitPlan.sellTarget1Price
+                        sellTp3Px = exitPlan.sellTarget3Price
+                        stopLossPx = exitPlan.emergencyStopLossPrice
+                    } else {
+                        val (prediction, badge) = aiService.generateDeepInstrumentPrediction(telemetry)
+                        _activeAiEngineBadge.value = badge
+                        livePx = prediction.spotPriceAtAnalysis
+                        buyTargetPx = prediction.entryZoneMin
+                        sellTargetPx = prediction.takeProfit2
+                        sellTp1Px = prediction.takeProfit1
+                        sellTp3Px = prediction.takeProfit3
+                        stopLossPx = prediction.stopLoss
+                    }
+                }
+
+                // Step 4: Stream/generate full Kurdish chat answer
+                val accumulated = StringBuilder()
+                withTimeout(75_000L) {
+                    aiService.streamAdvisorResponse(
+                        userQuestionKu = trimmed,
+                        attachedBitmaps = bitmaps,
+                        activeTelemetry = telemetry,
+                        topTickers = currentTickers
+                    ).collect { chunk ->
+                        accumulated.append(chunk)
+                        _advisorState.value = AiAdvisorUiState.Streaming(accumulated.toString())
+                    }
+                }
+
+                val finalAnswer = accumulated.toString()
+                if (finalAnswer.isNotBlank()) {
+                    // Automatically register with Background Monitor so user gets notified when coin hits Buy or Sell price!
+                    if (livePx > 0.0 && (buyTargetPx > 0.0 || sellTargetPx > 0.0)) {
+                        TradingBackgroundService.registerCoinTargetsInBackground(
+                            context = getApplication(),
+                            instId = detectedInstId,
+                            buyTargetPrice = buyTargetPx,
+                            sellTargetPrice = sellTargetPx,
+                            stopLossPrice = stopLossPx,
+                            referencePrice = livePx
+                        )
+                    }
+
+                    _advisorState.value = AiAdvisorUiState.Success(finalAnswer)
+                    _chatHistory.value = _chatHistory.value + AdvisorChatMessage(
+                        isUser = false,
+                        text = finalAnswer,
+                        detectedCoin = detectedInstId,
+                        livePriceAtAnalysis = livePx,
+                        buyAtPrice = buyTargetPx,
+                        sellAtPrice = sellTargetPx,
+                        sellTp1Price = sellTp1Px,
+                        sellTp3Price = sellTp3Px,
+                        stopLossPrice = stopLossPx,
+                        isTrackedInBackground = true
+                    )
+
+                    val notifSummary = if (sellTargetPx > 0.0 && buyTargetPx > 0.0) {
+                        "$detectedInstId • لە $${QuantMathEngine.formatCryptoPrice(buyTargetPx)} بیکڕە | کە گەیشتە $${QuantMathEngine.formatCryptoPrice(sellTargetPx)} بیفرۆشە!"
+                    } else {
+                        finalAnswer.lineSequence().firstOrNull { it.isNotBlank() }?.take(120) ?: "وەڵامی نوێ ئامادەیە"
+                    }
+
+                    TradingBackgroundService.sendInstantAlertNotification(
+                        context = getApplication(),
+                        title = "🤖 شیکردنەوەی $detectedInstId ئامادەیە",
+                        message = notifSummary
+                    )
+                } else {
+                    _advisorState.value = AiAdvisorUiState.Error("وەڵامی زیرەکی دەستکرد بەتاڵ بوو.")
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "AI advisor timed out", e)
+                _advisorState.value = AiAdvisorUiState.Error("وەڵامدانەوەی ڕاوێژکاری AI کاتی تەواو بوو. دووبارە هەوڵ بدەرەوە.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "AI advisor failed", e)
+                _advisorState.value = AiAdvisorUiState.Error(
+                    e.localizedMessage ?: "هەڵە لە پەیوەندیکردن بە ڕاوێژکاری زیرەکی دەستکرد."
+                )
+            }
+        }
+    }
+
+    private fun extractCoinFromUserText(text: String, liveTickers: List<OkxMarketTicker>): String? {
+        val upper = text.uppercase(Locale.US)
+
+        // Check Kurdish common coin names first
+        val kurdishAliases = mapOf(
+            "بیتکۆین" to "BTC-USDT",
+            "بیتکوین" to "BTC-USDT",
+            "ئیتیریۆم" to "ETH-USDT",
+            "ئیثیریۆم" to "ETH-USDT",
+            "سۆلانا" to "SOL-USDT",
+            "سولانا" to "SOL-USDT",
+            "تۆن" to "TON-USDT",
+            "ریپڵ" to "XRP-USDT",
+            "ڕیپڵ" to "XRP-USDT",
+            "دۆج" to "DOGE-USDT",
+            "پێپێ" to "PEPE-USDT",
+            "شیبا" to "SHIB-USDT",
+            "ترۆن" to "TRX-USDT",
+            "کاردانۆ" to "ADA-USDT",
+            "سوی" to "SUI-USDT"
+        )
+        for ((kuName, instId) in kurdishAliases) {
+            if (text.contains(kuName)) return instId
+        }
+
+        // Tokenize English symbols in user text
+        val words = Regex("""[A-Z0-9]{2,12}""").findAll(upper).map { it.value }.toList()
+        if (words.isNotEmpty()) {
+            // Check against live OKX tickers first
+            val tickerSymbols = liveTickers.associateBy { it.baseSymbol.uppercase(Locale.US) }
+            for (w in words) {
+                val clean = w.removeSuffix("USDT")
+                if (clean.length >= 2 && tickerSymbols.containsKey(clean)) {
+                    return tickerSymbols[clean]!!.instId
+                }
+            }
+            // Fallback to known major symbols
+            val commonSymbols = setOf(
+                "BTC", "ETH", "SOL", "TON", "XRP", "DOGE", "PEPE", "SUI", "BNB",
+                "ADA", "AVAX", "LINK", "TRX", "SHIB", "DOT", "NEAR", "LTC", "BCH",
+                "UNI", "APT", "ARB", "OP", "FIL", "ATOM", "INJ", "RNDR", "RENDER",
+                "FET", "WIF", "BONK", "FLOKI", "NOT", "DOGS", "HMSTR", "SEI", "TIA"
+            )
+            for (w in words) {
+                val clean = w.removeSuffix("USDT")
+                if (clean in commonSymbols) {
+                    return "$clean-USDT"
+                }
+            }
+        }
+        return null
+    }
+
+    fun watchCoinTargetsInBackground(
+        instId: String,
+        buyPrice: Double,
+        sellPrice: Double,
+        stopLossPrice: Double,
+        livePrice: Double
+    ) {
+        TradingBackgroundService.registerCoinTargetsInBackground(
+            context = getApplication(),
+            instId = instId,
+            buyTargetPrice = buyPrice,
+            sellTargetPrice = sellPrice,
+            stopLossPrice = stopLossPrice,
+            referencePrice = livePrice
+        )
+        _statusBannerKu.value = "🔔 چاودێری باگراوند بۆ $instId چالاک کرا (کڕین: $${QuantMathEngine.formatCryptoPrice(buyPrice)} | فرۆشتن: $${QuantMathEngine.formatCryptoPrice(sellPrice)})"
+    }
+
+    fun clearChatHistory() {
+        _chatHistory.value = listOf(
+            AdvisorChatMessage(
+                isUser = false,
+                text = "چاتەکە پاک کرایەوە. ناوی هەر دراوێک بنووسە یان بێسنوور وێنەی کڕینی دراوەکەت و چارتەکانت بنێرە تا پێت بڵێم لە چ نرخێکدا بیکڕیت و کە گەیشتە چەند بیفرۆشیت بۆ قازانج!"
+            )
+        )
+        _advisorState.value = AiAdvisorUiState.Idle
     }
 
     fun addApiKeys(
@@ -275,9 +474,6 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 "$addedCount کلیلی جیاوازی API بەیەکەوە زیادکران بۆ سیستەمی سووڕانەوەی ئۆتۆماتیکی"
             }
-            // Re-run AI prediction immediately with the newly added key(s)
-            aiPredictionCache.clear()
-            triggerGeminiAiPrediction()
         }
     }
 
@@ -318,339 +514,18 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setMarketInstType(instType: String) {
-        if (_selectedInstType.value == instType) return
-        _selectedInstType.value = instType
-        refreshMarketTickers(showSpinner = true)
-        val currentBase = _selectedInstId.value.removeSuffix("-SWAP")
-        val nextInstId = if (instType == "SWAP") "$currentBase-SWAP" else currentBase
-        selectInstrumentAndAnalyze(nextInstId, switchToDetailTab = false, autoRunAi = false)
-    }
-
-    fun updateSearchQuery(query: String) {
-        _searchQuery.value = query
-    }
-
-    fun selectFilterCategory(category: MarketFilterCategory) {
-        _selectedCategory.value = category
-    }
-
-    fun toggleAutoRefresh() {
-        _autoRefreshEnabled.value = !_autoRefreshEnabled.value
-    }
-
-    fun clearStatusBanner() {
-        _statusBannerKu.value = null
-    }
-
-    private fun startTickerPollingLoop() {
-        tickerLoopJob?.cancel()
-        tickerLoopJob = viewModelScope.launch {
-            refreshMarketTickers(showSpinner = true)
-            while (isActive) {
-                delay(6_000L)
-                if (_autoRefreshEnabled.value) {
-                    refreshMarketTickers(showSpinner = false)
-                }
-            }
-        }
-    }
-
-    fun refreshMarketTickers(showSpinner: Boolean = true) {
-        viewModelScope.launch {
-            if (showSpinner || _tickers.value.isEmpty()) {
-                _isMarketLoading.value = true
-            }
-            try {
-                val list = repository.fetchLiveMarketTickers(_selectedInstType.value)
-                _tickers.value = list
-                _marketError.value = null
-                _lastUpdatedMs.value = System.currentTimeMillis()
-                checkPriceAlertsAgainstLiveTickers(list)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to fetch OKX market tickers", e)
-                if (_tickers.value.isEmpty()) {
-                    _marketError.value = e.localizedMessage
-                        ?: "هەڵە لە وەرگرتنی داتای بازاڕی OKX. دڵنیابەرەوە لە هێڵی ئینتەرنێت."
-                }
-            } finally {
-                _isMarketLoading.value = false
-            }
-        }
-    }
-
-    fun selectInstrumentAndAnalyze(
-        instId: String,
-        switchToDetailTab: Boolean = true,
-        autoRunAi: Boolean = true
-    ) {
-        _selectedInstId.value = instId
-        if (switchToDetailTab) {
-            _selectedTab.value = 1
-        }
-
-        val cachedPred = aiPredictionCache[instId]
-        if (cachedPred != null) {
-            _aiPredictionState.value = AiPredictionUiState.Success(cachedPred)
-        } else {
-            _aiPredictionState.value = AiPredictionUiState.Idle
-        }
-
-        deepInspectJob?.cancel()
-        deepInspectJob = viewModelScope.launch {
-            _isTelemetryLoading.value = true
-            _telemetryError.value = null
-            try {
-                val fallbackTicker = _tickers.value.find { it.instId == instId }
-                val telemetry = repository.fetchDeepInstrumentTelemetry(instId, fallbackTicker)
-                _activeTelemetry.value = telemetry
-                _isTelemetryLoading.value = false
-
-                if (autoRunAi && aiPredictionCache[instId] == null) {
-                    triggerGeminiAiPrediction(telemetry)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load deep telemetry for $instId", e)
-                _isTelemetryLoading.value = false
-                _telemetryError.value = e.localizedMessage
-                    ?: "هەڵە لە خوێندنەوەی وردەکارییەکانی $instId لە OKX."
-            }
-        }
-    }
-
-    fun refreshActiveInstrumentAndAi() {
-        val currentId = _selectedInstId.value
-        aiPredictionCache.remove(currentId)
-        selectInstrumentAndAnalyze(currentId, switchToDetailTab = false, autoRunAi = true)
-    }
-
-    fun triggerGeminiAiPrediction(telemetryOverride: OkxInstrumentDeepTelemetry? = null) {
-        val telemetry = telemetryOverride ?: _activeTelemetry.value ?: return
-        viewModelScope.launch {
-            _aiPredictionState.value = AiPredictionUiState.Loading
-            try {
-                val (prediction, engineBadge) = aiService.generateDeepInstrumentPrediction(telemetry)
-                _activeAiEngineBadge.value = engineBadge
-                aiPredictionCache[telemetry.ticker.instId] = prediction
-                _aiPredictionState.value = AiPredictionUiState.Success(prediction)
-            } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "AI prediction timed out", e)
-                _aiPredictionState.value = AiPredictionUiState.Error(
-                    "پێشبینی زیرەکی دەستکرد کاتی زۆری خایاند (٦٠ چرکە). تکایە دووبارە هەوڵ بدەرەوە."
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "AI prediction failed", e)
-                _aiPredictionState.value = AiPredictionUiState.Error(
-                    e.localizedMessage ?: "دروستکردنی پێشبینی AI سەرکەوتوو نەبوو."
-                )
-            }
-        }
-    }
-
-    fun analyzeScreenshotForProfitExit(
-        imageUri: Uri,
-        userNoteKu: String = ""
-    ) {
-        viewModelScope.launch {
-            var decodedBitmap: Bitmap? = null
-            try {
-                decodedBitmap = decodeAndScaleBitmap(imageUri)
-                    ?: throw IllegalStateException("نەتوانرا وێنەکە بخوێنرێتەوە. تکایە وێنەیەکی تر هەڵبژێرە.")
-
-                _screenshotExitState.value = ScreenshotExitUiState.Analyzing(
-                    stageKu = "قۆناغی ١/٣: خوێندنەوەی کۆین و نرخی کڕین لە وێنەکەتدا بە سووڕانەوەی کلیلەکانی AI...",
-                    previewBitmap = decodedBitmap
-                )
-
-                val detectedInstId = aiService.detectCoinSymbolFromScreenshot(
-                    bitmap = decodedBitmap,
-                    userNoteKu = userNoteKu,
-                    fallbackInstId = _selectedInstId.value
-                )
-
-                _screenshotExitState.value = ScreenshotExitUiState.Analyzing(
-                    stageKu = "قۆناغی ٢/٣: وەرگرتنی نرخی زیندووی ئێستا و دیوارەکانی فرۆشتنی $detectedInstId لە OKX...",
-                    previewBitmap = decodedBitmap
-                )
-
-                val telemetry = runCatching {
-                    val fallbackTicker = _tickers.value.find { it.instId == detectedInstId }
-                    repository.fetchDeepInstrumentTelemetry(detectedInstId, fallbackTicker)
-                }.getOrElse {
-                    _activeTelemetry.value
-                        ?: repository.fetchDeepInstrumentTelemetry(_selectedInstId.value, null)
-                }
-
-                _selectedInstId.value = telemetry.ticker.instId
-                _activeTelemetry.value = telemetry
-
-                _screenshotExitState.value = ScreenshotExitUiState.Analyzing(
-                    stageKu = "قۆناغی ٣/٣: هەژمارکردنی وردترین نرخی فرۆشتن و زۆرترین قازانج...",
-                    previewBitmap = decodedBitmap
-                )
-
-                val exitPlan = aiService.analyzeTradeScreenshotForExitPlan(
-                    bitmap = decodedBitmap,
-                    userNoteKu = userNoteKu,
-                    telemetry = telemetry
-                )
-
-                _screenshotExitState.value = ScreenshotExitUiState.Success(
-                    previewBitmap = decodedBitmap,
-                    plan = exitPlan
-                )
-            } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "Screenshot exit analysis timed out", e)
-                _screenshotExitState.value = ScreenshotExitUiState.Error(
-                    message = "شیکردنەوەی وێنەکە کاتی زۆری خایاند (٦٠ چرکە). تکایە دووبارە هەوڵ بدەرەوە.",
-                    previewBitmap = decodedBitmap
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Screenshot exit analysis failed", e)
-                _screenshotExitState.value = ScreenshotExitUiState.Error(
-                    message = e.localizedMessage ?: "هەڵە لە شیکردنەوەی وێنەی کڕینەکە.",
-                    previewBitmap = decodedBitmap
-                )
-            }
-        }
-    }
-
-    fun saveScreenshotExitPlanAsSignal(plan: AiScreenshotExitPlan) {
-        viewModelScope.launch {
-            repository.saveAiSignal(
-                SavedAiSignalEntity(
-                    instId = plan.detectedInstId,
-                    signalDirection = "LONG",
-                    signalVerdictKu = "پلانی فرۆشتنی وێنە: ${plan.urgentActionVerdictKu}",
-                    confidencePercent = plan.confidencePercent,
-                    spotPriceAtSignal = plan.detectedBuyPrice,
-                    entryZoneMin = plan.detectedBuyPrice,
-                    entryZoneMax = plan.currentLiveOkxPrice,
-                    takeProfit1 = plan.sellTarget1Price,
-                    takeProfit2 = plan.sellTarget2Price,
-                    takeProfit3 = plan.sellTarget3Price,
-                    stopLoss = plan.emergencyStopLossPrice,
-                    riskRewardRatio = 3.0,
-                    forecast24hPrice = plan.goldenExitPrice,
-                    recommendedLeverage = plan.positionTypeKu,
-                    summaryKu = plan.detailedSellStrategyKu
-                )
-            )
-            _statusBannerKu.value = "پلانی فرۆشتنی ${plan.detectedInstId} لە لیستی سیگناڵەکان پاشەکەوت کرا"
-        }
-    }
-
-    fun runMarketWideAiScanner() {
-        viewModelScope.launch {
-            _aiScannerState.value = AiScannerUiState.Scanning
-            try {
-                val currentTickers = if (_tickers.value.isNotEmpty()) {
-                    _tickers.value
-                } else {
-                    repository.fetchLiveMarketTickers(_selectedInstType.value)
-                }
-                val (regimeKu, opportunities) = aiService.scanTopMarketOpportunities(
-                    tickers = currentTickers,
-                    activeDeepTelemetry = _activeTelemetry.value
-                )
-                _aiScannerState.value = AiScannerUiState.Success(
-                    marketRegimeKu = regimeKu,
-                    opportunities = opportunities
-                )
-            } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "AI scanner timed out", e)
-                _aiScannerState.value = AiScannerUiState.Error(
-                    "پشکنینی گشتی بازاڕ بە AI کاتی تەواو بوو (٦٠ چرکە). تکایە دووبارە هەوڵ بدەرەوە."
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "AI scanner failed", e)
-                _aiScannerState.value = AiScannerUiState.Error(
-                    e.localizedMessage ?: "هەڵە لە پشکنینی بازاڕ بە زیرەکی دەستکرد."
-                )
-            }
-        }
-    }
-
-    fun askAiAdvisor(questionKu: String, attachedImageUri: Uri? = null) {
-        val trimmed = questionKu.trim().ifBlank {
-            if (attachedImageUri != null) {
-                "ئەم کۆینەم کڕیوە لەم وێنەیەدا؛ بەپێی داتای زیندووی ئێستای OKX لە چ نرخێکدا بیفرۆشم بۆ زۆرترین قازانج؟"
-            } else ""
-        }
-        if (trimmed.isEmpty()) return
-
-        val activeId = _activeTelemetry.value?.ticker?.instId
-        _chatHistory.value = _chatHistory.value + AdvisorChatMessage(
-            isUser = true,
-            text = trimmed,
-            relatedInstId = activeId,
-            hasAttachedImage = attachedImageUri != null
-        )
-
-        viewModelScope.launch {
-            _advisorState.value = AiAdvisorUiState.Loading
-            val accumulated = StringBuilder()
-            try {
-                val bitmap = if (attachedImageUri != null) {
-                    decodeAndScaleBitmap(attachedImageUri)
-                } else null
-
-                kotlinx.coroutines.withTimeout(60_000L) {
-                    aiService.streamAdvisorResponse(
-                        userQuestionKu = trimmed,
-                        attachedBitmap = bitmap,
-                        activeTelemetry = _activeTelemetry.value,
-                        topTickers = _tickers.value
-                    ).collect { chunk ->
-                        accumulated.append(chunk)
-                        _advisorState.value = AiAdvisorUiState.Streaming(accumulated.toString())
-                    }
-                }
-                val finalAnswer = accumulated.toString()
-                if (finalAnswer.isNotBlank()) {
-                    _advisorState.value = AiAdvisorUiState.Success(finalAnswer)
-                    _chatHistory.value = _chatHistory.value + AdvisorChatMessage(
-                        isUser = false,
-                        text = finalAnswer,
-                        relatedInstId = activeId
-                    )
-                } else {
-                    _advisorState.value = AiAdvisorUiState.Error("وەڵامی زیرەکی دەستکرد بەتاڵ بوو.")
-                }
-            } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "AI advisor streaming timed out", e)
-                _advisorState.value = AiAdvisorUiState.Error(
-                    "وەڵامدانەوەی ڕاوێژکاری AI کاتی تەواو بوو (٦٠ چرکە)."
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "AI advisor streaming failed", e)
-                _advisorState.value = AiAdvisorUiState.Error(
-                    e.localizedMessage ?: "هەڵە لە پەیوەندیکردن بە ڕاوێژکاری زیرەکی دەستکرد."
-                )
-            }
-        }
-    }
-
-    private suspend fun decodeAndScaleBitmap(uri: Uri): Bitmap? = withContext(Dispatchers.IO) {
+    private suspend fun decodeAndScaleBitmap(uri: Uri, totalCount: Int = 1): Bitmap? = withContext(Dispatchers.IO) {
         runCatching {
             val contentResolver = getApplication<Application>().contentResolver
             val rawBitmap = contentResolver.openInputStream(uri)?.use { inputStream ->
                 BitmapFactory.decodeStream(inputStream)
             } ?: return@withContext null
 
-            val maxDim = 1280
+            val maxDim = when {
+                totalCount >= 8 -> 800
+                totalCount >= 4 -> 1024
+                else -> 1280
+            }
             val width = rawBitmap.width
             val height = rawBitmap.height
             if (width <= maxDim && height <= maxDim) {
@@ -662,91 +537,5 @@ class OkxAiViewModel(application: Application) : AndroidViewModel(application) {
                 Bitmap.createScaledBitmap(rawBitmap, targetW, targetH, true)
             }
         }.getOrNull()
-    }
-
-    fun toggleWatchlist(instId: String) {
-        viewModelScope.launch {
-            val currentSet = watchlistIds.value
-            val wasInWatchlist = currentSet.contains(instId)
-            repository.toggleWatchlist(instId, currentSet)
-            _statusBannerKu.value = if (wasInWatchlist) {
-                "$instId لە لیستی دڵخوازەکان لابرا"
-            } else {
-                "$instId زیادکرا بۆ لیستی دڵخوازەکان"
-            }
-        }
-    }
-
-    fun saveCurrentAiPrediction(prediction: AiTradingPrediction) {
-        viewModelScope.launch {
-            repository.saveAiSignal(
-                SavedAiSignalEntity(
-                    instId = prediction.instId,
-                    signalDirection = prediction.signalDirection,
-                    signalVerdictKu = prediction.signalVerdictKu,
-                    confidencePercent = prediction.confidencePercent,
-                    spotPriceAtSignal = prediction.spotPriceAtAnalysis,
-                    entryZoneMin = prediction.entryZoneMin,
-                    entryZoneMax = prediction.entryZoneMax,
-                    takeProfit1 = prediction.takeProfit1,
-                    takeProfit2 = prediction.takeProfit2,
-                    takeProfit3 = prediction.takeProfit3,
-                    stopLoss = prediction.stopLoss,
-                    riskRewardRatio = prediction.riskRewardRatio,
-                    forecast24hPrice = prediction.forecast24hPrice,
-                    recommendedLeverage = prediction.recommendedLeverage,
-                    summaryKu = prediction.multiTimeframeAlignmentKu.ifBlank { prediction.detailedKurdishAnalysis }
-                )
-            )
-            _statusBannerKu.value = "سیگناڵی زیرەکی دەستکرد بۆ ${prediction.instId} بە سەرکەوتوویی پاشەکەوت کرا"
-        }
-    }
-
-    fun deleteSavedSignal(id: Int) {
-        viewModelScope.launch {
-            repository.deleteSavedSignal(id)
-        }
-    }
-
-    fun createPriceAlert(instId: String, targetPrice: Double, noteKu: String) {
-        viewModelScope.launch {
-            val livePx = _tickers.value.find { it.instId == instId }?.lastPrice
-                ?: _activeTelemetry.value?.ticker?.lastPrice
-                ?: 0.0
-            val isAbove = targetPrice >= livePx
-            repository.addPriceAlert(
-                instId = instId,
-                targetPrice = targetPrice,
-                isAbove = isAbove,
-                noteKu = noteKu.ifBlank {
-                    if (isAbove) "ئاگادارکردنەوە لە کاتی بەرزبوونەوە" else "ئاگادارکردنەوە لە کاتی دابەزین"
-                }
-            )
-            _statusBannerKu.value = "ئاگادارکەرەوەی نرخ بۆ $instId لە ئاستی $targetPrice چالاک کرا"
-        }
-    }
-
-    fun deletePriceAlert(id: Int) {
-        viewModelScope.launch {
-            repository.deletePriceAlert(id)
-        }
-    }
-
-    private suspend fun checkPriceAlertsAgainstLiveTickers(liveTickers: List<OkxMarketTicker>) {
-        val currentAlerts = priceAlerts.value.filter { !it.isTriggered }
-        if (currentAlerts.isEmpty()) return
-        val priceMap = liveTickers.associateBy({ it.instId }, { it.lastPrice })
-        for (alert in currentAlerts) {
-            val currentPx = priceMap[alert.instId] ?: continue
-            val hit = if (alert.isAboveTarget) {
-                currentPx >= alert.targetPrice
-            } else {
-                currentPx <= alert.targetPrice
-            }
-            if (hit) {
-                repository.markAlertTriggered(alert.id)
-                _statusBannerKu.value = "ئاگاداری نرخ: ${alert.instId} گەیشتە نرخی دیاریکراو (${alert.targetPrice})!"
-            }
-        }
     }
 }
