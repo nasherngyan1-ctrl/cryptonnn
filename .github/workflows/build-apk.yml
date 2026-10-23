@@ -29,20 +29,22 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK Licenses
-        run: yes | sdkmanager --licenses || true
+      - name: Install Android SDK Platform 36.1 & Build Tools 36.0.0
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager --install "platform-tools" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Prepare Environment & Keystore for Firebase AI Logic
+      - name: Prepare Environment & Keystores
         run: |
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
           fi
-          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+          if [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
             echo "Restored debug.keystore from debug.keystore.base64"
           elif [ ! -f debug.keystore ]; then
@@ -56,10 +58,14 @@ jobs:
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+          fi
 
       - name: Build Installable APK
         run: |
-          gradle :app:assembleDebug --no-daemon --stacktrace
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/OKX-Kurd-AI-Pro.apk
           ls -lh dist/OKX-Kurd-AI-Pro.apk
@@ -72,8 +78,8 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Publish APK to GitHub Releases (on main/master push or tag)
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+      - name: Publish APK to GitHub Releases
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
