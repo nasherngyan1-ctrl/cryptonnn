@@ -1,0 +1,86 @@
+name: Build Installable Android APK (OKX Kurd AI Pro)
+
+on:
+  push:
+    branches: [ "main", "master", "**" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build & Package OKX Kurd AI APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK Licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Prepare Environment & Keystore for Firebase AI Logic
+        run: |
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+            echo "Restored debug.keystore from debug.keystore.base64"
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build Installable APK
+        run: |
+          gradle :app:assembleDebug --no-daemon --stacktrace
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/OKX-Kurd-AI-Pro.apk
+          ls -lh dist/OKX-Kurd-AI-Pro.apk
+
+      - name: Upload Installable APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OKX-Kurd-AI-Pro-APK
+          path: dist/OKX-Kurd-AI-Pro.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish APK to GitHub Releases (on main/master push or tag)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "OKX Kurd AI Pro v1.0.${{ github.run_number }} (Installable APK)"
+          body: |
+            ### ئۆکەی ئێکس کورد AI پرۆ (OKX Kurd AI Pro)
+            - فایلی دامەزراندنی ئەندرۆید (`OKX-Kurd-AI-Pro.apk`) ئامادەیە بۆ دابەزاندن و ئینستاڵکردن لەسەر مۆبایلەکەت.
+            - پەیوەستە بە داتای زیندووی بازاڕی **OKX API v5** و زیرەکی دەستکردی **Gemini 3.8 Flash**.
+          files: dist/OKX-Kurd-AI-Pro.apk
+          prerelease: false

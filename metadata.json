@@ -1,0 +1,6 @@
+{
+  "name": "OKX Kurd AI",
+  "description": "سیستەمی زیرەکی دەستکرد (Gemini AI) و داتای زۆر وردی چرکەبەچرکەی نرخی دراوەکان و پێشبینی بازاڕی ترەیدینگی OKX بە زمانی کوردی",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">OKX Kurd AI</string>
+    <string name="nav_market">بازاڕی OKX</string>
+    <string name="nav_ai_intel">پێشبینی AI و داتا</string>
+    <string name="nav_ai_scanner">ڕاوێژکاری AI</string>
+    <string name="nav_tools">سیگناڵ و بژمێر</string>
+    <string name="market_spot">بازاڕی سپۆت (SPOT)</string>
+    <string name="market_swap">فیوچەرزی هەمیشەیی (SWAP)</string>
+    <string name="search_hint">گەڕان بۆ دراو لە OKX (وەک BTC, ETH, SOL, TON)...</string>
+    <string name="live_connected">پەیوەستە بە OKX v5 و Gemini AI</string>
+    <string name="refresh_data">نوێکردنەوەی زانیارییەکان</string>
+    <string name="generate_ai_prediction">دروستکردنی پێشبینی وردی زیرەکی دەستکرد (AI)</string>
+    <string name="save_ai_signal">پاشەکەوتکردنی سیگناڵی AI</string>
+</resources>
